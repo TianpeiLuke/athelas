@@ -143,6 +143,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.env
+pipeline_steps/.env
+pip-wheel-metadata/
 
 # Spyder project settings
 .spyderproject
@@ -200,6 +203,16 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# VSCode and IDE configs
+.vscode/
+.idea/
+*.code-workspace
+launch.json
+
+# OS-specific files
+.DS_Store
+Thumbs.db
 
 # Marimo
 marimo/_static/
