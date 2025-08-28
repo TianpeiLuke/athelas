@@ -1,7 +1,7 @@
 from typing import List, Optional, Dict
 from transformers import AutoTokenizer
 
-from .processors import Processor
+from ..base.processors import Processor
 
 
 # --- Processor 6: Tokenization Processor using AutoTokenizer ---

@@ -4,7 +4,7 @@ from typing import Dict, List, Tuple, Optional, Union, Any
 from pathlib import Path
 import json
 
-from .processors import Processor
+from ..base.processors import Processor
 
 
 class RiskTableMappingProcessor(Processor):

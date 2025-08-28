@@ -2,7 +2,7 @@ import torch
 from typing import List, Union, Optional, Dict
 
 
-from .processors import Processor
+from ..base.processors import Processor
 
 
 class MultiClassLabelProcessor(Processor):

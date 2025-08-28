@@ -2,7 +2,7 @@ import re
 from bs4 import BeautifulSoup
 from typing import List, Union, Dict, Optional
 
-from .processors import Processor
+from ..base.processors import Processor
 
 
 # Processor 1: Text Normalization
@@ -182,4 +182,3 @@ class HTMLNormalizerProcessor(Processor):
             return [_norm_single(msg) for msg in input_text]
         else:
             return _norm_single(input_text)
-           

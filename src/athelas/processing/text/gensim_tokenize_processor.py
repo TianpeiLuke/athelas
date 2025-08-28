@@ -1,7 +1,7 @@
 import numpy as np
 from typing import List, Union, Dict, Optional
 from gensim.models import KeyedVectors
-from .processors import Processor
+from ..base.processors import Processor
 
 # --- Processor 7: FastText Embedding Processor ---
 class FastTextEmbeddingProcessor(Processor):
