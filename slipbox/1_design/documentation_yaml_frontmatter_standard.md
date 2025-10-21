@@ -109,6 +109,7 @@ Documentation for design documents should begin with "design":
 ```yaml
 tags:
   - design
+  - reference
   - [design_area]
   - [component_name]
   - [architecture_aspect]
@@ -159,6 +160,94 @@ Common test type subcategories:
 - `builders` - Step builder test documentation
 - `end_to_end` - End-to-end test documentation
 - `performance` - Performance test documentation
+
+### Analysis Tags
+
+Documentation for analysis documents should begin with "analysis":
+
+```yaml
+tags:
+  - analysis
+  - reference
+  - [analysis_type]
+  - [component_name]
+  - [analysis_purpose]
+```
+
+Example locations for analysis tags:
+- Code analysis documents
+- Performance analysis reports
+- Design analysis documents
+- Implementation analysis
+- Comparative analysis studies
+- Pain point analysis
+- Migration analysis documents
+
+Common analysis type subcategories:
+- `performance` - Performance analysis documentation
+- `design` - Design analysis and evaluation
+- `implementation` - Implementation analysis
+- `migration` - Migration analysis and planning
+- `comparative` - Comparative analysis studies
+- `pain_points` - Pain point identification and analysis
+- `redundancy` - Code redundancy analysis
+- `coverage` - Test coverage analysis
+
+### Prompt Tags
+
+Documentation for prompt templates should begin with "prompt":
+
+```yaml
+tags:
+  - prompt
+  - [prompt_type]
+  - [workflow_stage]
+  - [purpose]
+```
+
+Example locations for prompt tags:
+- LLM prompt templates
+- Agentic workflow prompts
+- Developer prompt templates
+- Validation prompt templates
+- Code generation prompts
+
+Common prompt type subcategories:
+- `planner` - Planning stage prompts
+- `validator` - Validation stage prompts
+- `programmer` - Code generation prompts
+- `refinement` - Code refinement prompts
+- `agentic` - Agentic workflow prompts
+- `developer` - Developer assistance prompts
+
+### Tutorial Tags
+
+Documentation for tutorial content should begin with "tutorial":
+
+```yaml
+tags:
+  - tutorial
+  - reference
+  - [tutorial_type]
+  - [component_name]
+  - [skill_level]
+```
+
+Example locations for tutorial tags:
+- Getting started guides
+- Step-by-step tutorials
+- API reference tutorials
+- Implementation tutorials
+- Best practices guides
+
+Common tutorial type subcategories:
+- `getting_started` - Getting started tutorials
+- `api_reference` - API reference documentation
+- `step_development` - Step development tutorials
+- `pipeline_development` - Pipeline development guides
+- `workspace` - Workspace management tutorials
+- `validation` - Validation framework tutorials
+- `registry` - Registry system tutorials
 
 ## Examples
 
