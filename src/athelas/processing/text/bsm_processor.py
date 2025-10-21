@@ -2,7 +2,7 @@ import re
 from bs4 import BeautifulSoup
 from typing import List, Union, Dict, Optional
 
-from ..base.processors import Processor
+from ..processors import Processor
 
 
 # Processor 1: Text Normalization
@@ -14,14 +14,14 @@ class TextNormalizationProcessor(Processor):
     def process(self, input_text: Union[str, List[str]]) -> Union[str, List[str]]:
         def _norm(s: str) -> str:
             s = s.strip().lower()
-            return re.sub(r'\s+', ' ', s)
+            return re.sub(r"\s+", " ", s)
 
         if isinstance(input_text, list):
             return [_norm(msg) for msg in input_text]
         else:
             return _norm(input_text)
 
-    
+
 # Processor 1: Text Normalization
 class TextUpperProcessor(Processor):
     def __init__(self):
@@ -32,10 +32,11 @@ class TextUpperProcessor(Processor):
         # Basic normalization: trim and lowercase.
         normalized = input_text.strip().upper()
         # Collapse multiple spaces into one.
-        normalized = re.sub(r'\s+', ' ', normalized)
+        normalized = re.sub(r"\s+", " ", normalized)
         return normalized
 
-#=====================================================================================
+
+# =====================================================================================
 # Processor 2: Dialogue Splitting
 class DialogueSplitterProcessor(Processor):
     def __init__(self, min_length: int = 1):
@@ -53,7 +54,7 @@ class DialogueSplitterProcessor(Processor):
         Returns:
             List of message strings.
         """
-        pattern = r'\[bom\](.*?)\[eom\]'
+        pattern = r"\[bom\](.*?)\[eom\]"
         raw_messages = re.findall(pattern, input_text, flags=re.DOTALL)
 
         # Strip whitespace and filter out short/empty messages
@@ -65,16 +66,17 @@ class DialogueSplitterProcessor(Processor):
 
         return messages
 
-    
-#=====================================================================================
+
+# =====================================================================================
 # Processor 3: Dialogue Chunker
 class DialogueChunkerProcessor(Processor):
-    def __init__(self, 
-                 tokenizer, 
-                 max_tokens=512, 
-                 truncate: bool = False,  # Added truncate parameter
-                 max_total_chunks: Optional[int] = 5
-                ):
+    def __init__(
+        self,
+        tokenizer,
+        max_tokens=512,
+        truncate: bool = False,  # Added truncate parameter
+        max_total_chunks: Optional[int] = 5,
+    ):
         """
         Args:
             tokenizer: A Hugging Face AutoTokenizer instance.
@@ -91,7 +93,7 @@ class DialogueChunkerProcessor(Processor):
         """
         Chunks a list of messages into groups such that each chunk's token count (without special tokens)
         does not exceed the max_tokens limit.
-        
+
         Returns:
             List of dialogue chunks (each chunk is a concatenated string of messages).
         """
@@ -107,8 +109,12 @@ class DialogueChunkerProcessor(Processor):
             if current_tokens + token_count > self.max_tokens:
                 if current_chunk:
                     chunks.append(" ".join(current_chunk).strip())
-                    num_chunks += 1 # Increment chunk count
-                    if self.max_total_chunks is not None and self.truncate and num_chunks >= self.max_total_chunks:
+                    num_chunks += 1  # Increment chunk count
+                    if (
+                        self.max_total_chunks is not None
+                        and self.truncate
+                        and num_chunks >= self.max_total_chunks
+                    ):
                         break  # Stop if max_total_chunks is reached
                 current_chunk = [msg]
                 current_tokens = token_count
@@ -116,8 +122,12 @@ class DialogueChunkerProcessor(Processor):
                 current_chunk.append(msg)
                 current_tokens += token_count
 
-            if self.max_total_chunks is not None and self.truncate and num_chunks >= self.max_total_chunks:
-                break # Stop if max_total_chunks is reached
+            if (
+                self.max_total_chunks is not None
+                and self.truncate
+                and num_chunks >= self.max_total_chunks
+            ):
+                break  # Stop if max_total_chunks is reached
 
         if current_chunk and (not self.truncate or num_chunks < self.max_total_chunks):
             chunks.append(" ".join(current_chunk).strip())
@@ -130,48 +140,49 @@ class DialogueChunkerProcessor(Processor):
             chunks = ["."]
 
         return chunks
-    
-    
-#====================================================================================
+
+
+# ====================================================================================
 # --- Processor 4: Emoji Remover ---
 class EmojiRemoverProcessor(Processor):
     def __init__(self):
         super().__init__()
-        self.processor_name = 'emoji_remover_processor'
+        self.processor_name = "emoji_remover_processor"
         self.emoji_pattern = re.compile(
-            "["                                     
-            u"\U0001F600-\U0001F64F"  # emoticons
-            u"\U0001F300-\U0001F5FF"  # symbols & pictographs
-            u"\U0001F680-\U0001F6FF"  # transport & map symbols
-            u"\U0001F1E0-\U0001F1FF"  # flags
-            u"\U00002702-\U000027B0"  # dingbats
-            u"\U000024C2-\U0001F251" 
-            "]+", 
-            flags=re.UNICODE
+            "["
+            "\U0001F600-\U0001F64F"  # emoticons
+            "\U0001F300-\U0001F5FF"  # symbols & pictographs
+            "\U0001F680-\U0001F6FF"  # transport & map symbols
+            "\U0001F1E0-\U0001F1FF"  # flags
+            "\U00002702-\U000027B0"  # dingbats
+            "\U000024C2-\U0001F251"
+            "]+",
+            flags=re.UNICODE,
         )
 
     def process(self, input_text: Union[str, List[str]]) -> Union[str, List[str]]:
         def _remove(s: str) -> str:
-            return self.emoji_pattern.sub('', s)
+            return self.emoji_pattern.sub("", s)
 
         if isinstance(input_text, list):
             return [_remove(msg) for msg in input_text]
         else:
             return _remove(input_text)
 
-    
-#=====================================================================================   
+
+# =====================================================================================
 # --- Processor 2: HTML Normalization ---
 class HTMLNormalizerProcessor(Processor):
     def __init__(self):
         super().__init__()
         self.processor_name = "html_normalizer_processor"
-    
+
     def process(self, input_text: Union[str, List[str]]) -> Union[str, List[str]]:
         """
-        If given a list of dialogue messages, normalize each one; 
+        If given a list of dialogue messages, normalize each one;
         otherwise normalize the single HTML string.
         """
+
         def _norm_single(text: str) -> str:
             soup = BeautifulSoup(text, "html.parser")
             # collapse whitespace and strip

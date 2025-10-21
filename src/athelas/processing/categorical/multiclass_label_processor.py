@@ -1,29 +1,31 @@
-import torch
+import numpy as np
 from typing import List, Union, Optional, Dict
 
 
-from ..base.processors import Processor
+from ..processors import Processor
 
 
 class MultiClassLabelProcessor(Processor):
     """
-    Processes multi-class labels into a format suitable for MultimodalBert.
+    Processes multi-class labels into a format suitable for machine learning models.
 
-    This processor handles encoding categorical labels into numerical tensors
-    and optionally provides one-hot encoding.
+    This processor handles encoding categorical labels into numerical arrays
+    and optionally provides one-hot encoding using numpy.
 
     Args:
         label_list (Optional[List[str]]): A list of unique label strings. If provided,
                                      the processor will learn this mapping; otherwise,
                                      it will learn the mapping from the data it processes.
         one_hot (bool): If True, output one-hot encoded labels.
+        strict (bool): If True, raise error for unknown labels when label_list is provided.
     """
 
-    def __init__(self, 
-                 label_list: Optional[List[str]] = None, 
-                 one_hot: bool = False,
-                 strict: bool = False
-                ):
+    def __init__(
+        self,
+        label_list: Optional[List[str]] = None,
+        one_hot: bool = False,
+        strict: bool = False,
+    ):
         super().__init__()
         self.processor_name = "multiclass_label_processor"
         self.label_to_id: Dict[str, int] = {}
@@ -32,10 +34,12 @@ class MultiClassLabelProcessor(Processor):
         self.strict = strict
 
         if label_list:
-            self.label_to_id = {str(label): i for i, label in enumerate(label_list)} #{label: i for i, label in enumerate(label_list)}
-            self.id_to_label = list(map(str, label_list)) #label_list
+            self.label_to_id = {
+                str(label): i for i, label in enumerate(label_list)
+            }  # {label: i for i, label in enumerate(label_list)}
+            self.id_to_label = list(map(str, label_list))  # label_list
 
-    def process(self, labels: Union[str, List[str]]) -> torch.Tensor:
+    def process(self, labels: Union[str, List[str]]) -> np.ndarray:
         """
         Encodes the input labels.
 
@@ -43,7 +47,7 @@ class MultiClassLabelProcessor(Processor):
             labels (Union[str, List[str]]): A single label or a list of labels.
 
         Returns:
-            torch.Tensor: Encoded labels as a LongTensor.
+            np.ndarray: Encoded labels as a numpy array.
         """
 
         if isinstance(labels, (str, int, float)):
@@ -59,12 +63,12 @@ class MultiClassLabelProcessor(Processor):
                 self.id_to_label.append(label)
             encoded_labels.append(self.label_to_id[label])
 
-        encoded_tensor = torch.tensor(encoded_labels, dtype=torch.long)
+        encoded_array = np.array(encoded_labels, dtype=np.int64)
 
         if self.one_hot:
-            one_hot_labels = torch.nn.functional.one_hot(
-                encoded_tensor, num_classes=len(self.id_to_label)
-            ).float()
+            # Create one-hot encoding using numpy
+            num_classes = len(self.id_to_label)
+            one_hot_labels = np.eye(num_classes)[encoded_array].astype(np.float32)
             return one_hot_labels
         else:
-            return encoded_tensor
+            return encoded_array

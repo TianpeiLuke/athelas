@@ -1,7 +1,8 @@
 import numpy as np
 from typing import List, Union, Dict, Optional
 from gensim.models import KeyedVectors
-from ..base.processors import Processor
+from ..processors import Processor
+
 
 # --- Processor 7: FastText Embedding Processor ---
 class FastTextEmbeddingProcessor(Processor):
@@ -12,6 +13,7 @@ class FastTextEmbeddingProcessor(Processor):
       - `embeddings_key`: List[List[float]] of shape (L, D)
       - `attention_mask_key`: List[int] of shape (L,)
     """
+
     def __init__(
         self,
         keyed_vectors: KeyedVectors,
@@ -30,8 +32,7 @@ class FastTextEmbeddingProcessor(Processor):
         self.attention_mask_key = attention_mask_key
 
     def process(
-        self,
-        input_chunks: List[str]
+        self, input_chunks: List[str]
     ) -> List[Dict[str, Union[List[List[float]], List[int]]]]:
         output = []
         for chunk in input_chunks:
@@ -59,8 +60,10 @@ class FastTextEmbeddingProcessor(Processor):
                     embeddings.extend([[0.0] * self.dim] * pad_len)
                     mask.extend([0] * pad_len)
 
-            output.append({
-                self.embeddings_key: embeddings,
-                self.attention_mask_key: mask,
-            })
+            output.append(
+                {
+                    self.embeddings_key: embeddings,
+                    self.attention_mask_key: mask,
+                }
+            )
         return output

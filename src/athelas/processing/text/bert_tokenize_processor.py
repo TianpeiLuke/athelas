@@ -1,7 +1,7 @@
 from typing import List, Optional, Dict
 from transformers import AutoTokenizer
 
-from ..base.processors import Processor
+from ..processors import Processor
 
 
 # --- Processor 6: Tokenization Processor using AutoTokenizer ---
@@ -28,12 +28,12 @@ class TokenizationProcessor(Processor):
 
     def process(self, input_chunks: List[str]) -> List[Dict[str, List[int]]]:
         tokenized_output = []
-        
+
         for chunk in input_chunks:
             # Skip empty or whitespace-only chunks
             if not chunk or not chunk.strip():
                 continue
-                
+
             encoded = self.tokenizer(
                 chunk,
                 add_special_tokens=self.add_special_tokens,
@@ -45,7 +45,9 @@ class TokenizationProcessor(Processor):
             tokenized_output.append(
                 {
                     self.input_ids_key: encoded["input_ids"],  # Use stored key
-                    self.attention_mask_key: encoded["attention_mask"],  # Use stored key
+                    self.attention_mask_key: encoded[
+                        "attention_mask"
+                    ],  # Use stored key
                 }
             )
         return tokenized_output

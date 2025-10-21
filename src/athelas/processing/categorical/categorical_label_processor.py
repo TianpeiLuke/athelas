@@ -1,9 +1,15 @@
 # processor/categorical_label_processor.py
 from typing import List
-from ..base.processors import Processor
+from ..processors import Processor
+
 
 class CategoricalLabelProcessor(Processor):
-    def __init__(self, initial_categories: List[str] = None, update_on_new: bool = True, unknown_label: int = -1):
+    def __init__(
+        self,
+        initial_categories: List[str] = None,
+        update_on_new: bool = True,
+        unknown_label: int = -1,
+    ):
         """
         Args:
             initial_categories (List[str], optional): Initial list of categories.
@@ -16,11 +22,13 @@ class CategoricalLabelProcessor(Processor):
             self.category_to_label = {}
             self.next_label = 0
         else:
-            self.category_to_label = {cat: idx for idx, cat in enumerate(initial_categories)}
+            self.category_to_label = {
+                cat: idx for idx, cat in enumerate(initial_categories)
+            }
             self.next_label = len(initial_categories)
         self.update_on_new = update_on_new
         self.unknown_label = unknown_label
-    
+
     def process(self, input_text: str) -> int:
         # Transform category string into a numeric label.
         if input_text in self.category_to_label:
