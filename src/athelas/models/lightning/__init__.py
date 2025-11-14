@@ -3,7 +3,7 @@
 This package contains PyTorch Lightning model implementations organized into
 subdirectories by modality type:
 - text: Text-only models (BERT, LSTM, CNN)
-- multimodal: 2-modality fusion models
+- bimodal: 2-modality fusion models (text + tabular)
 - trimodal: 3-modality fusion models  
 - tabular: Tabular-only models
 - utils: Shared utilities and training infrastructure
@@ -21,17 +21,24 @@ from .text import (
     TextCNN,
 )
 
-# Multimodal models
-from .multimodal import (
-    MultimodalBert,
-    MultimodalCNN,
-    MultimodalBertCrossAttn,
+# Bimodal models (2-modality: text + tabular)
+from .bimodal import (
+    BimodalBert,
+    BimodalCNN,
+    BimodalBertCrossAttn,
     CrossAttentionFusion,
-    MultimodalBertGateFusion,
+    BimodalBertGateFusion,
     GateFusion,
-    MultimodalBertMoE,
+    BimodalBertMoE,
     MixtureOfExperts,
 )
+
+# Backward compatibility aliases
+MultimodalBert = BimodalBert
+MultimodalCNN = BimodalCNN
+MultimodalBertCrossAttn = BimodalBertCrossAttn
+MultimodalBertGateFusion = BimodalBertGateFusion
+MultimodalBertMoE = BimodalBertMoE
 
 # Trimodal models
 from .trimodal import (
@@ -98,14 +105,21 @@ __all__ = [
     "TextBertClassificationConfig",
     "TextLSTM",
     "TextCNN",
-    # Multimodal models
+    # Bimodal models (new naming)
+    "BimodalBert",
+    "BimodalCNN",
+    "BimodalBertCrossAttn",
+    "BimodalBertGateFusion",
+    "BimodalBertMoE",
+    # Multimodal models (backward compatibility aliases)
     "MultimodalBert",
     "MultimodalCNN",
     "MultimodalBertCrossAttn",
-    "CrossAttentionFusion",
     "MultimodalBertGateFusion",
-    "GateFusion",
     "MultimodalBertMoE",
+    # Fusion modules
+    "CrossAttentionFusion",
+    "GateFusion",
     "MixtureOfExperts",
     # Trimodal models
     "TrimodalBert",
