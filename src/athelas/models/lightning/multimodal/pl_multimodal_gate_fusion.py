@@ -20,10 +20,10 @@ from transformers import (
 )
 import onnx
 
-from .dist_utils import all_gather
-from .pl_tab_ae import TabAE
-from .pl_bert import TextBertBase
-from .pl_model_plots import compute_metrics
+from ..utils.dist_utils import all_gather
+from ..tabular.pl_tab_ae import TabAE
+from ..text.pl_bert import TextBertBase
+from ..utils.pl_model_plots import compute_metrics
 
 # =================== Logging Setup =================================
 logger = logging.getLogger(__name__)

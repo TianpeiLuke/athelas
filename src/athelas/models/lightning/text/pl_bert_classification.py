@@ -19,8 +19,8 @@ from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.utilities import rank_zero_only
 
-from .dist_utils import all_gather
-from .pl_model_plots import compute_metrics
+from ..utils.dist_utils import all_gather
+from ..utils.pl_model_plots import compute_metrics
 
 # =================== Logging Setup =================================
 logger = logging.getLogger(__name__)

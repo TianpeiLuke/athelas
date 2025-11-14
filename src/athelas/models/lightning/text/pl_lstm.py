@@ -24,8 +24,8 @@ logger.addHandler(handler)
 logger.propagate = False
 
 # --- Internal Utilities --------------------------------------------
-from .dist_utils import all_gather
-from .pl_model_plots import compute_metrics
+from ..utils.dist_utils import all_gather
+from ..utils.pl_model_plots import compute_metrics
 
 
 class TextLSTM(pl.LightningModule):

@@ -21,8 +21,8 @@ from lightning.pytorch.callbacks.early_stopping import (
 )  # Added EarlyStopping
 from lightning.pytorch.callbacks import ModelCheckpoint  # Added ModelCheckpoint
 
-from .dist_utils import all_gather  # Added all_gather
-from .pl_model_plots import compute_metrics  # Added compute_metrics
+from ..utils.dist_utils import all_gather  # Added all_gather
+from ..utils.pl_model_plots import compute_metrics  # Added compute_metrics
 
 
 class TextBertBaseConfig(BaseModel):

@@ -11,10 +11,10 @@ import lightning.pytorch as pl
 import onnx
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
-from .pl_tab_ae import TabAE
-from .pl_text_cnn import TextCNN
-from .dist_utils import all_gather
-from .pl_model_plots import compute_metrics
+from ..tabular.pl_tab_ae import TabAE
+from ..text.pl_text_cnn import TextCNN
+from ..utils.dist_utils import all_gather
+from ..utils.pl_model_plots import compute_metrics
 
 
 class MultimodalCNN(pl.LightningModule):

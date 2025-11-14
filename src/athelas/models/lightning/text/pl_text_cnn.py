@@ -11,8 +11,8 @@ import lightning.pytorch as pl
 import pandas as pd
 import onnx
 
-from .pl_model_plots import compute_metrics
-from .dist_utils import all_gather
+from ..utils.pl_model_plots import compute_metrics
+from ..utils.dist_utils import all_gather
 
 
 class TextCNN(pl.LightningModule):

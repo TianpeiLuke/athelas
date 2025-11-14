@@ -19,10 +19,10 @@ from transformers import (
 )
 import onnx
 
-from .dist_utils import all_gather, get_rank
-from .pl_tab_ae import TabAE  # Or TabularEmbeddingModule
-from .pl_bert import TextBertBase
-from .pl_model_plots import compute_metrics
+from ..utils.dist_utils import all_gather, get_rank
+from ..tabular.pl_tab_ae import TabAE  # Or TabularEmbeddingModule
+from ..text.pl_bert import TextBertBase
+from ..utils.pl_model_plots import compute_metrics
 
 # =================== Logging Setup =================================
 logger = logging.getLogger(__name__)

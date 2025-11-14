@@ -31,18 +31,18 @@ import onnx
 import onnxruntime as ort
 
 
-from .pl_multimodal_cnn import MultimodalCNN
-from .pl_bert_classification import TextBertClassification
-from .pl_bert import TextBertBase
-from .pl_tab_ae import TabAE
-from .pl_lstm import TextLSTM
-from .pl_multimodal_bert import MultimodalBert
-from .pl_multimodal_gate_fusion import MultimodalBertGateFusion
-from .pl_multimodal_moe import MultimodalBertMoE
-from .pl_multimodal_cross_attn import MultimodalBertCrossAttn
-from .pl_trimodal_bert import TrimodalBert
-from .pl_trimodal_cross_attn import TrimodalCrossAttentionBert
-from .pl_trimodal_gate_fusion import TrimodalGateFusionBert
+from ..multimodal.pl_multimodal_cnn import MultimodalCNN
+from ..text.pl_bert_classification import TextBertClassification
+from ..text.pl_bert import TextBertBase
+from ..tabular.pl_tab_ae import TabAE
+from ..text.pl_lstm import TextLSTM
+from ..multimodal.pl_multimodal_bert import MultimodalBert
+from ..multimodal.pl_multimodal_gate_fusion import MultimodalBertGateFusion
+from ..multimodal.pl_multimodal_moe import MultimodalBertMoE
+from ..multimodal.pl_multimodal_cross_attn import MultimodalBertCrossAttn
+from ..trimodal.pl_trimodal_bert import TrimodalBert
+from ..trimodal.pl_trimodal_cross_attn import TrimodalCrossAttentionBert
+from ..trimodal.pl_trimodal_gate_fusion import TrimodalGateFusionBert
 
 
 def setup_logger():
