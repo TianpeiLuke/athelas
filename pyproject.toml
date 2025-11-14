@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "athelas"
-version = "0.1.0"
+version = "0.2.0"
 description = "Zettelkasten-inspired ML model catalog with intelligent knowledge management"
 authors = [{name = "Tianpei Xie", email = "unidoctor@gmail.com"}]
 license = {text = "MIT"}
