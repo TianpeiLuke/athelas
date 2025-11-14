@@ -14,6 +14,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Component discovery and recommendation system
 - Knowledge graph visualization
 
+## [0.2.1] - 2025-11-14
+
+### Changed
+- **PyTorch Lightning Models Reorganization**:
+  - Reorganized models into subdirectories by modality type:
+    - `text/`: Text-only models (BERT, LSTM, CNN)
+    - `multimodal/`: 2-modality fusion models
+    - `trimodal/`: 3-modality fusion models
+    - `tabular/`: Tabular-only models
+    - `utils/`: Shared utilities and training infrastructure
+  - Created dedicated `__init__.py` files for each subdirectory
+  - Updated main `lightning/__init__.py` for backward compatibility
+  - All models remain accessible from `athelas.models.lightning` for existing code
+
+### Fixed
+- Fixed relative import paths in Lightning model files after reorganization
+- Updated cross-references between model modules to use new subdirectory structure
+
 ## [0.2.0] - 2025-11-13
 
 ### Added
