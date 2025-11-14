@@ -31,15 +31,15 @@ import onnx
 import onnxruntime as ort
 
 
-from ..multimodal.pl_multimodal_cnn import MultimodalCNN
+from ..bimodal.pl_bimodal_cnn import BimodalCNN
 from ..text.pl_bert_classification import TextBertClassification
 from ..text.pl_bert import TextBertBase
 from ..tabular.pl_tab_ae import TabAE
 from ..text.pl_lstm import TextLSTM
-from ..multimodal.pl_multimodal_bert import MultimodalBert
-from ..multimodal.pl_multimodal_gate_fusion import MultimodalBertGateFusion
-from ..multimodal.pl_multimodal_moe import MultimodalBertMoE
-from ..multimodal.pl_multimodal_cross_attn import MultimodalBertCrossAttn
+from ..bimodal.pl_bimodal_bert import BimodalBert
+from ..bimodal.pl_bimodal_gate_fusion import BimodalBertGateFusion
+from ..bimodal.pl_bimodal_moe import BimodalBertMoE
+from ..bimodal.pl_bimodal_cross_attn import BimodalBertCrossAttn
 from ..trimodal.pl_trimodal_bert import TrimodalBert
 from ..trimodal.pl_trimodal_cross_attn import TrimodalCrossAttentionBert
 from ..trimodal.pl_trimodal_gate_fusion import TrimodalGateFusionBert
@@ -399,7 +399,7 @@ def load_model(
     filename: str,
     config: Dict,
     embedding_mat: torch.Tensor,
-    model_class: str = "multimodal_bert",
+    model_class: str = "bimodal_bert",
     device_l: str = "cpu",
 ) -> nn.Module:
     """
@@ -410,19 +410,27 @@ def load_model(
     """
     logger.info("Instantiating model.")
     model = {
-        "multimodal_cnn": lambda: MultimodalCNN(
+        "bimodal_cnn": lambda: BimodalCNN(
             config, embedding_mat.shape[0], embedding_mat
         ),
         "bert": lambda: TextBertClassification(config),
         "lstm": lambda: TextLSTM(config, embedding_mat.shape[0], embedding_mat),
-        "multimodal_bert": lambda: MultimodalBert(config),
-        "multimodal_gate_fusion": lambda: MultimodalBertGateFusion(config),
-        "multimodal_moe": lambda: MultimodalBertMoE(config),
-        "multimodal_cross_attn": lambda: MultimodalBertCrossAttn(config),
+        "bimodal_bert": lambda: BimodalBert(config),
+        "bimodal_gate_fusion": lambda: BimodalBertGateFusion(config),
+        "bimodal_moe": lambda: BimodalBertMoE(config),
+        "bimodal_cross_attn": lambda: BimodalBertCrossAttn(config),
+        # Backward compatibility
+        "multimodal_cnn": lambda: BimodalCNN(
+            config, embedding_mat.shape[0], embedding_mat
+        ),
+        "multimodal_bert": lambda: BimodalBert(config),
+        "multimodal_gate_fusion": lambda: BimodalBertGateFusion(config),
+        "multimodal_moe": lambda: BimodalBertMoE(config),
+        "multimodal_cross_attn": lambda: BimodalBertCrossAttn(config),
         "trimodal_bert": lambda: TrimodalBert(config),
         "trimodal_cross_attn_bert": lambda: TrimodalCrossAttentionBert(config),
         "trimodal_gate_fusion_bert": lambda: TrimodalGateFusionBert(config),
-    }.get(model_class, lambda: MultimodalBert(config))()
+    }.get(model_class, lambda: BimodalBert(config))()
 
     try:
         logger.info(f"Loading model weights from: {filename}")
@@ -436,18 +444,24 @@ def load_model(
 
 
 def load_checkpoint(
-    filename: str, model_class: str = "multimodal_bert", device_l: str = "cpu"
+    filename: str, model_class: str = "bimodal_bert", device_l: str = "cpu"
 ) -> nn.Module:
     logger.info("Loading checkpoint.")
     model_fn = {
-        "multimodal_cnn": MultimodalCNN,
+        "bimodal_cnn": BimodalCNN,
         "bert": TextBertClassification,
         "lstm": TextLSTM,
-        "multimodal_bert": MultimodalBert,
-        "multimodal_gate_fusion": MultimodalBertGateFusion,
-        "multimodal_moe": MultimodalBertMoE,
-        "multimodal_cross_attn": MultimodalBertCrossAttn,
-    }.get(model_class, MultimodalBert)
+        "bimodal_bert": BimodalBert,
+        "bimodal_gate_fusion": BimodalBertGateFusion,
+        "bimodal_moe": BimodalBertMoE,
+        "bimodal_cross_attn": BimodalBertCrossAttn,
+        # Backward compatibility
+        "multimodal_cnn": BimodalCNN,
+        "multimodal_bert": BimodalBert,
+        "multimodal_gate_fusion": BimodalBertGateFusion,
+        "multimodal_moe": BimodalBertMoE,
+        "multimodal_cross_attn": BimodalBertCrossAttn,
+    }.get(model_class, BimodalBert)
     return model_fn.load_from_checkpoint(filename, map_location=device_l)
 
 
