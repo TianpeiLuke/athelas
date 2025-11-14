@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""
-LightGBMMT Multi-Task Model Inference Script
-
-Provides focused inference engine for multi-task gradient boosting models.
-Handles model loading, preprocessing, and multi-task prediction generation.
-"""
 
 # Standard library imports
 import os
@@ -17,9 +11,9 @@ import logging
 # ============================================================================
 
 # Control which PyPI source to use via environment variable
-# Set USE_SECURE_PYPI=true to use secure CodeArtifact PyPI (DEFAULT)
-# Set USE_SECURE_PYPI=false to use public PyPI
-USE_SECURE_PYPI = os.environ.get("USE_SECURE_PYPI", "true").lower() == "true"
+# Set USE_SECURE_PYPI=true to use secure CodeArtifact PyPI
+# Set USE_SECURE_PYPI=false or leave unset to use public PyPI
+USE_SECURE_PYPI = os.environ.get("USE_SECURE_PYPI", "false").lower() == "true"
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
@@ -131,14 +125,14 @@ def install_packages(packages: list, use_secure: bool = USE_SECURE_PYPI) -> None
                    Defaults to USE_SECURE_PYPI environment variable.
 
     Environment Variables:
-        USE_SECURE_PYPI: Set to "true" to use secure PyPI (DEFAULT), "false" for public PyPI
+        USE_SECURE_PYPI: Set to "true" to use secure PyPI, "false" for public PyPI
 
     Example:
-        # Install from secure PyPI (default)
+        # Install from public PyPI (default)
         install_packages(["pandas==1.5.0", "numpy"])
 
-        # Install from public PyPI
-        os.environ["USE_SECURE_PYPI"] = "false"
+        # Install from secure PyPI
+        os.environ["USE_SECURE_PYPI"] = "true"
         install_packages(["pandas==1.5.0", "numpy"])
     """
     logger.info("=" * 70)
@@ -146,7 +140,7 @@ def install_packages(packages: list, use_secure: bool = USE_SECURE_PYPI) -> None
     logger.info("=" * 70)
     logger.info(f"PyPI Source: {'SECURE (CodeArtifact)' if use_secure else 'PUBLIC'}")
     logger.info(
-        f"Environment Variable USE_SECURE_PYPI: {os.environ.get('USE_SECURE_PYPI', 'not set (defaults to true)')}"
+        f"Environment Variable USE_SECURE_PYPI: {os.environ.get('USE_SECURE_PYPI', 'not set')}"
     )
     logger.info(f"Number of packages: {len(packages)}")
     logger.info("=" * 70)
@@ -178,7 +172,6 @@ required_packages = [
     "scipy==1.10.1",
     "matplotlib>=3.3.0,<3.7.0",
     "pygam==0.8.1",
-    "lightgbm>=3.3.0",  # Added for LightGBMMT
 ]
 
 # Install packages using unified installation function
@@ -187,7 +180,8 @@ install_packages(required_packages)
 print("***********************Package Installation Complete*********************")
 
 import json
-import pickle as pkl
+import logging
+import pickle as pkl  # Add this line
 from pathlib import Path
 from typing import Dict, Any, Union, Tuple, List, Optional
 from io import StringIO, BytesIO
@@ -195,7 +189,7 @@ from io import StringIO, BytesIO
 # Third-party imports
 import pandas as pd
 import numpy as np
-import lightgbm as lgb
+import xgboost as xgb
 from flask import Response
 
 # Local imports
@@ -204,18 +198,23 @@ from ...processing.numerical.numerical_imputation_processor import (
     NumericalVariableImputationProcessor,
 )
 
+# Constants
+__version__ = "1.0.0"
 
 # File names
-MODEL_FILE = "lightgbmmt_model.txt"  # LightGBM text format
+MODEL_FILE = "xgboost_model.bst"
 RISK_TABLE_FILE = "risk_table_map.pkl"
 IMPUTE_DICT_FILE = "impute_dict.pkl"
 FEATURE_IMPORTANCE_FILE = "feature_importance.json"
 FEATURE_COLUMNS_FILE = "feature_columns.txt"
 HYPERPARAMETERS_FILE = "hyperparameters.json"
 
-# Calibration model files (per-task structure)
+# Calibration model files
 CALIBRATION_DIR = "calibration"
-# Per-task calibration: task_0_calibration_model.pkl, task_1_calibration_model.pkl, etc.
+CALIBRATION_MODEL_FILE = "calibration_model.pkl"
+PERCENTILE_SCORE_FILE = "percentile_score.pkl"
+CALIBRATION_SUMMARY_FILE = "calibration_summary.json"
+CALIBRATION_MODELS_DIR = "calibration_models"  # For multiclass calibration models
 
 # Content types
 CONTENT_TYPE_CSV = "text/csv"
@@ -246,7 +245,7 @@ if not logger.handlers:
 
 
 # --------------------------------------------------------------------------------
-#                           MODEL LOADING BLOCK
+#                           Model BLOCK
 # --------------------------------------------------------------------------------
 
 
@@ -265,7 +264,6 @@ def validate_model_files(model_dir: str) -> None:
         RISK_TABLE_FILE,
         IMPUTE_DICT_FILE,
         FEATURE_COLUMNS_FILE,
-        HYPERPARAMETERS_FILE,  # Required for multi-task configuration
     ]
     for file in required_files:
         file_path = os.path.join(model_dir, file)
@@ -314,19 +312,10 @@ def read_feature_columns(model_dir: str) -> List[str]:
         raise
 
 
-def load_lightgbmmt_model(model_dir: str) -> lgb.Booster:
-    """
-    Load LightGBMMT model from file.
-
-    Args:
-        model_dir: Directory containing model artifacts
-
-    Returns:
-        LightGBM Booster model
-    """
-    model_path = os.path.join(model_dir, MODEL_FILE)
-    model = lgb.Booster(model_file=model_path)
-    logger.info(f"Loaded LightGBMMT model from {model_path}")
+def load_xgboost_model(model_dir: str) -> xgb.Booster:
+    """Load XGBoost model from file."""
+    model = xgb.Booster()
+    model.load_model(os.path.join(model_dir, MODEL_FILE))
     return model
 
 
@@ -387,139 +376,268 @@ def load_feature_importance(model_dir: str) -> Dict[str, Any]:
 
 
 def load_hyperparameters(model_dir: str) -> Dict[str, Any]:
-    """
-    Load hyperparameters from JSON file.
-
-    For multi-task models, hyperparameters contain:
-    - task_label_names: List of task names
-    - main_task_index: Index of the main task
-    """
+    """Load hyperparameters from JSON file."""
     try:
         with open(os.path.join(model_dir, HYPERPARAMETERS_FILE), "r") as f:
-            hyperparams = json.load(f)
-
-        # Validate multi-task configuration
-        if "task_label_names" not in hyperparams:
-            raise ValueError("Missing 'task_label_names' in hyperparameters")
-        if "main_task_index" not in hyperparams:
-            raise ValueError("Missing 'main_task_index' in hyperparameters")
-
-        logger.info(
-            f"Loaded multi-task configuration: {len(hyperparams['task_label_names'])} tasks"
-        )
-        logger.info(f"Main task index: {hyperparams['main_task_index']}")
-
-        return hyperparams
+            return json.load(f)
     except Exception as e:
-        logger.error(f"Could not load {HYPERPARAMETERS_FILE}: {e}")
-        raise
+        logger.warning(f"Could not load {HYPERPARAMETERS_FILE}: {e}")
+        return {}
 
 
-def load_multitask_calibration_models(model_dir: str, num_tasks: int) -> Optional[Dict]:
+def load_calibration_model(model_dir: str) -> Optional[Any]:
     """
-    Load per-task calibration models.
-
-    Expected structure:
-    calibration/
-      task_0_calibration_model.pkl
-      task_1_calibration_model.pkl
-      ...
+    Load calibration model if it exists. Supports both regular calibration models
+    (calibration_model.pkl) and percentile calibration (percentile_score.pkl).
 
     Args:
         model_dir: Directory containing model artifacts
-        num_tasks: Number of tasks (from hyperparameters)
 
     Returns:
-        Dictionary with 'type': 'multitask' and 'data': {task_idx: model}
-        or None if no calibration models found
+        Calibration model if found, None otherwise. Returns a dictionary with
+        'type' and 'data' keys for percentile calibration, or the model object
+        directly for regular calibration.
     """
-    calibration_dir = os.path.join(model_dir, CALIBRATION_DIR)
-    if not os.path.exists(calibration_dir):
-        logger.info("No calibration directory found")
-        return None
+    # Check for percentile calibration first
+    percentile_path = os.path.join(model_dir, CALIBRATION_DIR, PERCENTILE_SCORE_FILE)
+    if os.path.exists(percentile_path):
+        logger.info(f"Loading percentile calibration from {percentile_path}")
+        try:
+            with open(percentile_path, "rb") as f:
+                percentile_mapping = pkl.load(f)
+                return {"type": "percentile", "data": percentile_mapping}
+        except Exception as e:
+            logger.warning(f"Failed to load percentile calibration: {e}")
 
-    calibrators = {}
-    for i in range(num_tasks):
-        model_file = os.path.join(calibration_dir, f"task_{i}_calibration_model.pkl")
-        if os.path.exists(model_file):
-            try:
-                with open(model_file, "rb") as f:
-                    calibrators[i] = pkl.load(f)
-                logger.info(f"Loaded calibration model for task {i}")
-            except Exception as e:
-                logger.warning(f"Failed to load calibration model for task {i}: {e}")
+    # Check for binary calibration model
+    calibration_path = os.path.join(model_dir, CALIBRATION_DIR, CALIBRATION_MODEL_FILE)
+    if os.path.exists(calibration_path):
+        logger.info(f"Loading binary calibration model from {calibration_path}")
+        try:
+            with open(calibration_path, "rb") as f:
+                return {"type": "regular", "data": pkl.load(f)}
+        except Exception as e:
+            logger.warning(f"Failed to load binary calibration model: {e}")
 
-    if not calibrators:
-        logger.info("No calibration models found in calibration directory")
-        return None
+    # Check for multiclass calibration models
+    multiclass_dir = os.path.join(model_dir, CALIBRATION_DIR, CALIBRATION_MODELS_DIR)
+    if os.path.exists(multiclass_dir) and os.path.isdir(multiclass_dir):
+        logger.info(f"Loading multiclass calibration models from {multiclass_dir}")
+        try:
+            calibrators = {}
+            for file in os.listdir(multiclass_dir):
+                if file.endswith(".pkl"):
+                    class_name = file.replace("calibration_model_class_", "").replace(
+                        ".pkl", ""
+                    )
+                    with open(os.path.join(multiclass_dir, file), "rb") as f:
+                        calibrators[class_name] = pkl.load(f)
+            if calibrators:
+                return {"type": "regular_multiclass", "data": calibrators}
+        except Exception as e:
+            logger.warning(f"Failed to load multiclass calibration models: {e}")
 
-    return {"type": "multitask", "data": calibrators}
+    logger.info("No calibration model found")
+    return None
 
 
-def apply_multitask_calibration(
-    predictions: np.ndarray, calibrators: Dict[int, Any]
+def apply_percentile_calibration(
+    scores: np.ndarray, percentile_mapping: List[Tuple[float, float]]
 ) -> np.ndarray:
     """
-    Apply per-task calibration to multi-task predictions.
+    Apply percentile score mapping to raw scores.
 
     Args:
-        predictions: Raw predictions (n_samples, n_tasks)
-        calibrators: Dictionary mapping task index to calibration model
+        scores: Raw model prediction scores (N x 2 for binary classification)
+        percentile_mapping: List of (raw_score, percentile) tuples
 
     Returns:
-        Calibrated predictions (n_samples, n_tasks)
+        Calibrated scores with same shape as input
     """
-    calibrated = predictions.copy()
 
-    for task_idx, calibrator in calibrators.items():
-        if task_idx < predictions.shape[1]:
-            task_probs = predictions[:, task_idx]
+    def interpolate_score(
+        raw_score: float, mapping: List[Tuple[float, float]]
+    ) -> float:
+        """Interpolate percentile for a single raw score."""
+        # Handle boundary cases
+        if raw_score <= mapping[0][0]:
+            return mapping[0][1]
+        if raw_score >= mapping[-1][0]:
+            return mapping[-1][1]
 
-            try:
-                # Apply calibration based on calibrator type
-                if hasattr(calibrator, "transform"):
-                    # Isotonic regression
-                    calibrated[:, task_idx] = calibrator.transform(task_probs)
-                elif hasattr(calibrator, "predict_proba"):
-                    # GAM or Platt scaling
-                    calibrated[:, task_idx] = calibrator.predict_proba(
-                        task_probs.reshape(-1, 1)
-                    )
-                else:
-                    logger.warning(
-                        f"Unknown calibrator type for task {task_idx}: {type(calibrator)}"
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to calibrate task {task_idx}: {e}")
+        # Find appropriate range and interpolate
+        for i in range(len(mapping) - 1):
+            if mapping[i][0] <= raw_score <= mapping[i + 1][0]:
+                x1, y1 = mapping[i]
+                x2, y2 = mapping[i + 1]
+                if x2 == x1:
+                    return y1
+                return y1 + (y2 - y1) * (raw_score - x1) / (x2 - x1)
+        return mapping[-1][1]  # Fallback
+
+    # Apply percentile calibration to class-1 probabilities
+    calibrated = np.zeros_like(scores)
+    for i in range(scores.shape[0]):
+        # For binary classification, calibrate class-1 probability
+        raw_class1_prob = scores[i, 1]
+        calibrated_class1_prob = interpolate_score(raw_class1_prob, percentile_mapping)
+        calibrated[i, 1] = calibrated_class1_prob
+        calibrated[i, 0] = 1 - calibrated_class1_prob
 
     return calibrated
 
 
-def create_model_config(
-    model: lgb.Booster,
-    feature_columns: List[str],
-    hyperparameters: Dict[str, Any],
-) -> Dict[str, Any]:
+def apply_regular_binary_calibration(scores: np.ndarray, calibrator: Any) -> np.ndarray:
     """
-    Create model configuration dictionary for multi-task model.
+    Apply regular calibration to binary classification scores.
 
     Args:
-        model: LightGBM Booster model
-        feature_columns: List of feature column names
-        hyperparameters: Model hyperparameters (includes task configuration)
+        scores: Raw model prediction scores (N x 2)
+        calibrator: Trained calibration model (GAM, Isotonic, or Platt)
 
     Returns:
-        Configuration dictionary
+        Calibrated scores with same shape as input
     """
-    task_label_names = hyperparameters.get("task_label_names", [])
-    main_task_index = hyperparameters.get("main_task_index", 0)
+    calibrated = np.zeros_like(scores)
 
+    if hasattr(calibrator, "transform"):
+        # Isotonic regression - expects 1D array
+        calibrated[:, 1] = calibrator.transform(scores[:, 1])  # class 1 probability
+        calibrated[:, 0] = 1 - calibrated[:, 1]  # class 0 probability
+    elif hasattr(calibrator, "predict_proba"):
+        # GAM or Platt scaling - expects 2D array
+        probas = calibrator.predict_proba(scores[:, 1].reshape(-1, 1))
+        calibrated[:, 1] = probas  # class 1 probability
+        calibrated[:, 0] = 1 - probas  # class 0 probability
+    else:
+        logger.warning(f"Unknown binary calibrator type: {type(calibrator)}")
+        return scores  # Fallback to raw scores
+
+    return calibrated
+
+
+def apply_regular_multiclass_calibration(
+    scores: np.ndarray, calibrators: Dict[str, Any]
+) -> np.ndarray:
+    """
+    Apply regular calibration to multiclass scores.
+
+    Args:
+        scores: Raw model prediction scores (N x num_classes)
+        calibrators: Dictionary of calibration models, one per class
+
+    Returns:
+        Calibrated and normalized scores with same shape as input
+    """
+    calibrated = np.zeros_like(scores)
+
+    # Apply calibration to each class
+    for i in range(scores.shape[1]):
+        class_name = str(i)
+        if class_name in calibrators:
+            class_calibrator = calibrators[class_name]
+            if hasattr(class_calibrator, "transform"):
+                calibrated[:, i] = class_calibrator.transform(scores[:, i])
+            elif hasattr(class_calibrator, "predict_proba"):
+                calibrated[:, i] = class_calibrator.predict_proba(
+                    scores[:, i].reshape(-1, 1)
+                )
+            else:
+                calibrated[:, i] = scores[:, i]  # Fallback to raw scores
+        else:
+            calibrated[:, i] = scores[:, i]  # No calibrator for this class
+
+    # Normalize probabilities to sum to 1
+    row_sums = calibrated.sum(axis=1)
+    calibrated = calibrated / row_sums[:, np.newaxis]
+
+    return calibrated
+
+
+def apply_legacy_calibration(
+    scores: np.ndarray, calibrator: Any, is_multiclass: bool
+) -> np.ndarray:
+    """
+    Apply legacy calibration format for backward compatibility.
+
+    Args:
+        scores: Raw model prediction scores
+        calibrator: Legacy calibration model(s)
+        is_multiclass: Whether this is multiclass classification
+
+    Returns:
+        Calibrated scores
+    """
+    logger.info("Using legacy calibration format")
+
+    if is_multiclass:
+        return apply_regular_multiclass_calibration(scores, calibrator)
+    else:
+        return apply_regular_binary_calibration(scores, calibrator)
+
+
+def apply_calibration(
+    scores: np.ndarray, calibrator: Any, is_multiclass: bool
+) -> np.ndarray:
+    """
+    Apply calibration to raw model scores. Supports both regular calibration models
+    and percentile calibration.
+
+    Args:
+        scores: Raw model prediction scores
+        calibrator: Loaded calibration model(s) or percentile mapping
+        is_multiclass: Whether this is a multiclass model
+
+    Returns:
+        Calibrated scores
+    """
+    if calibrator is None:
+        return scores
+
+    try:
+        # Handle percentile calibration
+        if isinstance(calibrator, dict) and calibrator.get("type") == "percentile":
+            if is_multiclass:
+                logger.warning(
+                    "Percentile calibration not yet supported for multiclass, using raw scores"
+                )
+                return scores
+            else:
+                logger.info("Applying percentile calibration")
+                return apply_percentile_calibration(scores, calibrator["data"])
+
+        # Handle regular calibration models
+        elif isinstance(calibrator, dict) and calibrator.get("type") in [
+            "regular",
+            "regular_multiclass",
+        ]:
+            actual_calibrator = calibrator["data"]
+
+            if calibrator.get("type") == "regular_multiclass" or is_multiclass:
+                logger.info("Applying regular multiclass calibration")
+                return apply_regular_multiclass_calibration(scores, actual_calibrator)
+            else:
+                logger.info("Applying regular binary calibration")
+                return apply_regular_binary_calibration(scores, actual_calibrator)
+
+        # Legacy support for direct calibrator objects (backward compatibility)
+        else:
+            return apply_legacy_calibration(scores, calibrator, is_multiclass)
+
+    except Exception as e:
+        logger.error(f"Error applying calibration: {str(e)}", exc_info=True)
+        return scores
+
+
+def create_model_config(
+    model: xgb.Booster, feature_columns: List[str], hyperparameters: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Create model configuration dictionary."""
     return {
-        "is_multiclass": False,  # Multi-task, not multiclass
-        "is_multitask": True,  # NEW FLAG
-        "num_tasks": len(task_label_names),
-        "task_names": task_label_names,
-        "main_task_index": main_task_index,
+        "is_multiclass": (
+            True if hasattr(model, "num_class") and model.num_class() > 2 else False
+        ),
+        "num_classes": model.num_class() if hasattr(model, "num_class") else 2,
         "feature_columns": feature_columns,
         "hyperparameters": hyperparameters,
     }
@@ -539,14 +657,14 @@ def model_fn(model_dir: str) -> Dict[str, Any]:
         FileNotFoundError: If required model files are missing
         Exception: For other loading errors
     """
-    logger.info(f"Loading LightGBMMT model from {model_dir}")
+    logger.info(f"Loading model from {model_dir}")
 
     try:
         # Validate all required files exist
         validate_model_files(model_dir)
 
         # Load model and artifacts
-        model = load_lightgbmmt_model(model_dir)
+        model = load_xgboost_model(model_dir)
         risk_tables = load_risk_tables(model_dir)
         risk_processors = create_risk_processors(risk_tables)
 
@@ -560,15 +678,10 @@ def model_fn(model_dir: str) -> Dict[str, Any]:
         # Create configuration
         config = create_model_config(model, feature_columns, hyperparameters)
 
-        # Load calibration models if available
-        num_tasks = config["num_tasks"]
-        calibrator = load_multitask_calibration_models(model_dir, num_tasks)
+        # Load calibration model if available
+        calibrator = load_calibration_model(model_dir)
         if calibrator:
-            logger.info(
-                f"Calibration models loaded for {len(calibrator['data'])} tasks"
-            )
-        else:
-            logger.info("No calibration models found - will use raw predictions")
+            logger.info("Calibration model loaded successfully")
 
         return {
             "model": model,
@@ -751,9 +864,6 @@ def apply_preprocessing(
     """
     Apply preprocessing steps to input data.
 
-    Note: Preprocessing is identical to XGBoost - same transformations apply
-    regardless of single-task vs multi-task model architecture.
-
     Args:
         df: Input DataFrame
         feature_columns: List of feature columns
@@ -850,44 +960,29 @@ def convert_to_numeric(df: pd.DataFrame, feature_columns: List[str]) -> pd.DataF
     return df
 
 
-def generate_multitask_predictions(
-    model: lgb.Booster,
+def generate_predictions(
+    model: xgb.Booster,
     df: pd.DataFrame,
     feature_columns: List[str],
-    num_tasks: int,
+    is_multiclass: bool,
 ) -> np.ndarray:
     """
-    Generate multi-task predictions using the LightGBMMT model.
+    Generate predictions using the XGBoost model.
 
     Args:
-        model: LightGBM Booster model
-        df: Preprocessed dataframe
-        feature_columns: List of feature column names
-        num_tasks: Number of tasks (for validation)
+        model: XGBoost model
+        df: Preprocessed DataFrame
+        feature_columns: Feature columns to use
+        is_multiclass: Whether this is a multiclass model
 
     Returns:
-        np.ndarray of shape (n_samples, n_tasks) with probabilities
-        Each column represents probability for one binary task
+        numpy array of predictions
     """
-    # Get available features for prediction
-    available_features = [col for col in feature_columns if col in df.columns]
-    X = df[available_features].values
+    dtest = xgb.DMatrix(df[feature_columns].values, feature_names=feature_columns)
+    predictions = model.predict(dtest)
 
-    # Generate predictions using LightGBM
-    predictions = model.predict(X)
-
-    # Validate output shape
-    if len(predictions.shape) == 1:
-        # Edge case: single task, reshape to (n_samples, 1)
-        predictions = predictions.reshape(-1, 1)
-
-    if predictions.shape[1] != num_tasks:
-        raise ValueError(
-            f"Model output shape mismatch: expected {num_tasks} tasks, "
-            f"got {predictions.shape[1]} outputs"
-        )
-
-    logger.info(f"Generated multi-task predictions: shape {predictions.shape}")
+    if not is_multiclass and len(predictions.shape) == 1:
+        predictions = np.column_stack([1 - predictions, predictions])
 
     return predictions
 
@@ -915,7 +1010,7 @@ def predict_fn(
         numerical_processors = model_artifacts["numerical_processors"]
         config = model_artifacts["config"]
         feature_columns = config["feature_columns"]
-        num_tasks = config["num_tasks"]
+        is_multiclass = config["is_multiclass"]
         calibrator = model_artifacts.get("calibrator")
 
         # Validate input
@@ -933,20 +1028,20 @@ def predict_fn(
         df = convert_to_numeric(df, feature_columns)
 
         # Generate raw predictions
-        raw_predictions = generate_multitask_predictions(
+        raw_predictions = generate_predictions(
             model=model,
             df=df,
             feature_columns=feature_columns,
-            num_tasks=num_tasks,
+            is_multiclass=is_multiclass,
         )
 
         # Apply calibration if available, otherwise use raw predictions
         if calibrator is not None:
             try:
-                calibrated_predictions = apply_multitask_calibration(
-                    raw_predictions, calibrator["data"]
+                calibrated_predictions = apply_calibration(
+                    raw_predictions, calibrator, is_multiclass
                 )
-                logger.info("Applied per-task calibration to predictions")
+                logger.info("Applied calibration to predictions")
             except Exception as e:
                 logger.warning(
                     f"Failed to apply calibration, using raw predictions: {e}"
@@ -955,7 +1050,7 @@ def predict_fn(
         else:
             # No calibrator available, use raw predictions
             logger.info(
-                "No calibration models found, using raw predictions for calibrated output"
+                "No calibration model found, using raw predictions for calibrated output"
             )
             calibrated_predictions = raw_predictions.copy()
 
@@ -982,15 +1077,15 @@ def predict_fn(
 
 def normalize_predictions(
     prediction_output: Union[np.ndarray, List, Dict[str, np.ndarray]],
-) -> Tuple[List[List[float]], List[List[float]], int]:
+) -> Tuple[List[List[float]], List[List[float]], bool]:
     """
-    Normalize prediction output into a consistent format for multi-task models.
+    Normalize prediction output into a consistent format.
 
     Args:
         prediction_output: Raw prediction output from model or dict with raw and calibrated predictions
 
     Returns:
-        Tuple of (raw scores list, calibrated scores list, num_tasks)
+        Tuple of (raw scores list, calibrated scores list, is_multiclass flag)
 
     Raises:
         ValueError: If prediction format is invalid
@@ -1053,35 +1148,37 @@ def normalize_predictions(
         if calibrated_scores_list == raw_scores_list:
             calibrated_scores_list = [[score] for score in calibrated_scores_list]
 
-    # Get number of tasks (columns in prediction matrix)
-    num_tasks = len(raw_scores_list[0])
+    # Check number of classes (length of probability vector)
+    num_classes = len(raw_scores_list[0])
+    is_multiclass = num_classes > 2
 
-    logger.debug(f"Number of tasks: {num_tasks}")
-    return raw_scores_list, calibrated_scores_list, num_tasks
+    logger.debug(f"Number of classes: {num_classes}, is_multiclass: {is_multiclass}")
+    return raw_scores_list, calibrated_scores_list, is_multiclass
 
 
 def format_json_record(
-    raw_probs: List[float],
-    calibrated_probs: List[float],
-    main_task_index: int,
+    raw_probs: List[float], calibrated_probs: List[float], is_multiclass: bool
 ) -> Dict[str, Any]:
     """
-    Format a single multi-task prediction record for JSON output.
-
-    Reuses XGBoost multiclass format for compatibility.
-
-    Output structure:
-    - prob_01, prob_02, ...: Task probabilities
-    - calibrated_prob_01, calibrated_prob_02, ...: Calibrated task probabilities
-    - custom-output-label: Main task prediction (class-0 or class-1)
+    Format a single prediction record for JSON output with both raw and calibrated scores.
 
     Args:
-        raw_probs: List of raw task probabilities
-        calibrated_probs: List of calibrated task probabilities
-        main_task_index: Index of main task for output label
+        raw_probs: List of raw probability scores
+        calibrated_probs: List of calibrated probability scores
+        is_multiclass: Whether this is a multiclass prediction
 
     Returns:
         Dictionary containing formatted prediction record
+
+    Notes:
+        Binary classification (2 classes):
+            - legacy-score: raw class-1 probability
+            - score-percentile: calibrated class-1 probability
+            - calibrated-score: calibrated class-1 probability
+            - custom-output-label: predicted class
+        Multiclass (>2 classes):
+            - prob_01, calibrated_prob_01, prob_02, calibrated_prob_02, etc.
+            - custom-output-label: predicted class
     """
     if not raw_probs:
         raise ValueError("Empty probability list")
@@ -1090,17 +1187,39 @@ def format_json_record(
     if calibrated_probs is None or len(calibrated_probs) != len(raw_probs):
         calibrated_probs = raw_probs
 
-    # Interleaved raw and calibrated probabilities
-    record = {}
-    for i in range(len(raw_probs)):
-        task_prefix = str(i + 1).zfill(2)
-        record[f"prob_{task_prefix}"] = str(raw_probs[i])
-        record[f"calibrated_prob_{task_prefix}"] = str(calibrated_probs[i])
+    # Use raw scores for prediction decision
+    max_idx = raw_probs.index(max(raw_probs))
 
-    # Prediction based on MAIN TASK only (threshold at 0.5)
-    main_task_prob = raw_probs[main_task_index]
-    main_task_prediction = 1 if main_task_prob > 0.5 else 0
-    record["custom-output-label"] = f"class-{main_task_prediction}"
+    if not is_multiclass:
+        # Binary classification
+        if len(raw_probs) != 2:
+            raise ValueError(
+                f"Binary classification expects 2 probabilities, got {len(raw_probs)}"
+            )
+
+        # Order: legacy-score, score-percentile, calibrated-score, custom-output-label
+        record = {
+            "legacy-score": str(raw_probs[1]),  # Raw class-1 probability
+            "score-percentile": str(
+                calibrated_probs[1]
+            ),  # Same as calibrated-score, more descriptive name
+            "calibrated-score": str(
+                calibrated_probs[1]
+            ),  # Calibrated class-1 probability
+            "custom-output-label": f"class-{max_idx}",  # Prediction based on raw scores
+        }
+    else:
+        # Multiclass: include all probabilities in interleaved format
+        record = {}
+
+        # Interleaved raw and calibrated probabilities
+        for i in range(len(raw_probs)):
+            class_prefix = str(i + 1).zfill(2)
+            record[f"prob_{class_prefix}"] = str(raw_probs[i])
+            record[f"calibrated_prob_{class_prefix}"] = str(calibrated_probs[i])
+
+        # Add the predicted class at the end
+        record["custom-output-label"] = f"class-{max_idx}"
 
     return record
 
@@ -1108,45 +1227,49 @@ def format_json_record(
 def format_json_response(
     raw_scores_list: List[List[float]],
     calibrated_scores_list: List[List[float]],
-    main_task_index: int,
+    is_multiclass: bool,
 ) -> Tuple[str, str]:
     """
-    Format multi-task predictions as JSON response.
+    Format predictions as JSON response with both raw and calibrated scores.
 
     Args:
         raw_scores_list: List of raw prediction scores
         calibrated_scores_list: List of calibrated prediction scores
-        main_task_index: Index of main task
+        is_multiclass: Whether this is a multiclass prediction
 
     Returns:
         Tuple of (JSON response string, content type)
 
-    Example Output (3 tasks, main_task_index=0):
-        {
-          "predictions": [
-            {
-              "prob_01": "0.7234",
-              "calibrated_prob_01": "0.6891",
-              "prob_02": "0.3156",
-              "calibrated_prob_02": "0.2943",
-              "prob_03": "0.8421",
-              "calibrated_prob_03": "0.8102",
-              "custom-output-label": "class-1"
-            },
-            {
-              "prob_01": "0.2156",
-              "calibrated_prob_01": "0.1987",
-              "prob_02": "0.6789",
-              "calibrated_prob_02": "0.6521",
-              "prob_03": "0.4321",
-              "calibrated_prob_03": "0.4089",
-              "custom-output-label": "class-0"
-            }
-          ]
+    Example outputs:
+        Binary: {
+            "predictions": [
+                {
+                    "legacy-score": "0.7",
+                    "score-percentile": "0.75",
+                    "calibrated-score": "0.75",
+                    "custom-output-label": "class-1"
+                },
+                ...
+            ]
+        }
+
+        Multiclass: {
+            "predictions": [
+                {
+                    "prob_01": "0.2",
+                    "calibrated_prob_01": "0.18",
+                    "prob_02": "0.3",
+                    "calibrated_prob_02": "0.32",
+                    "prob_03": "0.5",
+                    "calibrated_prob_03": "0.5",
+                    "custom-output-label": "class-2"
+                },
+                ...
+            ]
         }
     """
     output_records = [
-        format_json_record(raw_probs, cal_probs, main_task_index)
+        format_json_record(raw_probs, cal_probs, is_multiclass)
         for raw_probs, cal_probs in zip(raw_scores_list, calibrated_scores_list)
     ]
 
@@ -1158,24 +1281,22 @@ def format_json_response(
 def format_csv_response(
     raw_scores_list: List[List[float]],
     calibrated_scores_list: List[List[float]],
-    main_task_index: int,
+    is_multiclass: bool,
 ) -> Tuple[str, str]:
     """
-    Format multi-task predictions as CSV response without headers.
+    Format predictions as CSV response without headers.
 
     Args:
         raw_scores_list: List of raw prediction scores
         calibrated_scores_list: List of calibrated prediction scores
-        main_task_index: Index of main task
+        is_multiclass: Whether this is a multiclass prediction
 
     Returns:
         Tuple of (CSV response string, content type)
 
-    Example Output (3 tasks, main_task_index=0):
-        0.7234,0.6891,0.3156,0.2943,0.8421,0.8102,class-1
-        0.2156,0.1987,0.6789,0.6521,0.4321,0.4089,class-0
-
-    Format: raw_prob_01,cal_prob_01,raw_prob_02,cal_prob_02,raw_prob_03,cal_prob_03,main_task_label
+    Notes:
+        Binary classification ordering: legacy-score, score-percentile, calibrated-score, custom-output-label
+        Multiclass ordering: prob_01, calibrated_prob_01, prob_02, calibrated_prob_02, ..., custom-output-label
     """
     csv_lines = []
 
@@ -1185,28 +1306,53 @@ def format_csv_response(
     ):
         calibrated_scores_list = raw_scores_list
 
-    # Multi-task - no header, interleaved raw and calibrated probabilities
-    for i, raw_probs in enumerate(raw_scores_list):
-        calibrated_probs = calibrated_scores_list[i]
-        num_tasks = len(raw_probs)
+    if not is_multiclass:
+        # Binary classification - no header
+        for i, raw_probs in enumerate(raw_scores_list):
+            if len(raw_probs) != 2:
+                raise ValueError(
+                    f"Binary classification expects 2 probabilities, got {len(raw_probs)}"
+                )
 
-        # Create interleaved raw and calibrated probabilities
-        line = []
-        for task_idx in range(num_tasks):
-            # Raw probability
-            raw_prob = round(float(raw_probs[task_idx]), 4)
-            line.append(f"{raw_prob:.4f}")
+            # Raw score (legacy-score)
+            raw_score = round(float(raw_probs[1]), 4)  # class-1 probability
 
-            # Calibrated probability
-            cal_prob = round(float(calibrated_probs[task_idx]), 4)
-            line.append(f"{cal_prob:.4f}")
+            # Calibrated score (calibrated-score)
+            calibrated_score = round(float(calibrated_scores_list[i][1]), 4)
 
-        # Add main task prediction (using raw scores for prediction)
-        main_task_prob = raw_probs[main_task_index]
-        main_task_prediction = 1 if main_task_prob > 0.5 else 0
-        line.append(f"class-{main_task_prediction}")
+            # Output label (using raw scores for prediction)
+            prediction = "class-1" if raw_probs[1] > raw_probs[0] else "class-0"
 
-        csv_lines.append(",".join(map(str, line)))
+            # Create line with exactly this order: legacy-score, score-percentile, calibrated-score, custom-output-label
+            line = [
+                f"{raw_score:.4f}",
+                f"{calibrated_score:.4f}",
+                f"{calibrated_score:.4f}",
+                prediction,
+            ]
+            csv_lines.append(",".join(map(str, line)))
+    else:
+        # Multiclass - no header
+        for i, raw_probs in enumerate(raw_scores_list):
+            calibrated_probs = calibrated_scores_list[i]
+            num_classes = len(raw_probs)
+
+            # Create interleaved raw and calibrated probabilities
+            line = []
+            for class_idx in range(num_classes):
+                # Raw probability
+                raw_prob = round(float(raw_probs[class_idx]), 4)
+                line.append(f"{raw_prob:.4f}")
+
+                # Calibrated probability
+                cal_prob = round(float(calibrated_probs[class_idx]), 4)
+                line.append(f"{cal_prob:.4f}")
+
+            # Add prediction (using raw scores for prediction)
+            max_idx = raw_probs.index(max(raw_probs))
+            line.append(f"class-{max_idx}")
+
+            csv_lines.append(",".join(map(str, line)))
 
     response_body = "\n".join(csv_lines) + "\n"
     return response_body, CONTENT_TYPE_CSV
@@ -1215,15 +1361,13 @@ def format_csv_response(
 def output_fn(
     prediction_output: Union[np.ndarray, List, Dict[str, np.ndarray]],
     accept: str = CONTENT_TYPE_JSON,
-    main_task_index: int = 0,
 ) -> Tuple[str, str]:
     """
-    Serializes the multi-task prediction output.
+    Serializes the prediction output.
 
     Args:
         prediction_output: Model predictions (raw and calibrated)
         accept: The requested response MIME type
-        main_task_index: Index of main task for output label
 
     Returns:
         Tuple[str, str]: (response_body, content_type)
@@ -1237,19 +1381,19 @@ def output_fn(
 
     try:
         # Normalize prediction format
-        raw_scores_list, calibrated_scores_list, num_tasks = normalize_predictions(
+        raw_scores_list, calibrated_scores_list, is_multiclass = normalize_predictions(
             prediction_output
         )
 
         # Format response based on accept type
         if accept.lower() == CONTENT_TYPE_JSON:
             return format_json_response(
-                raw_scores_list, calibrated_scores_list, main_task_index
+                raw_scores_list, calibrated_scores_list, is_multiclass
             )
 
         elif accept.lower() == CONTENT_TYPE_CSV:
             return format_csv_response(
-                raw_scores_list, calibrated_scores_list, main_task_index
+                raw_scores_list, calibrated_scores_list, is_multiclass
             )
 
         else:

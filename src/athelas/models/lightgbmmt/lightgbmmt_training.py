@@ -152,15 +152,15 @@ from sklearn.metrics import (
     precision_recall_curve,
 )
 
-from models.loss.loss_factory import LossFactory
-from models.factory.model_factory import ModelFactory
-from models.base.training_state import TrainingState
+from .loss.loss_factory import LossFactory
+from .factory.model_factory import ModelFactory
+from .base.training_state import TrainingState
 
-from hyperparams.hyperparameters_lightgbmmt import LightGBMMtModelHyperparameters
+from .hyperparams.hyperparameters_lightgbmmt import LightGBMMtModelHyperparameters
 
 # Preprocessing imports
-from processing.categorical.risk_table_processor import RiskTableMappingProcessor
-from processing.numerical.numerical_imputation_processor import (
+from ...processing.categorical.risk_table_processor import RiskTableMappingProcessor
+from ...processing.numerical.numerical_imputation_processor import (
     NumericalVariableImputationProcessor,
 )
 
