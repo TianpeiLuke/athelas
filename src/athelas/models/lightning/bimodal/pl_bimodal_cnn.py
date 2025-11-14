@@ -17,7 +17,7 @@ from ..utils.dist_utils import all_gather
 from ..utils.pl_model_plots import compute_metrics
 
 
-class MultimodalCNN(pl.LightningModule):
+class BimodalCNN(pl.LightningModule):
     def __init__(
         self,
         config: Dict[str, Union[int, float, str, bool, List[str], torch.FloatTensor]],
@@ -26,7 +26,7 @@ class MultimodalCNN(pl.LightningModule):
     ):
         super().__init__()
         self.config = config
-        self.model_class = "multimodal_cnn"
+        self.model_class = "bimodal_cnn"
 
         # === Core configuration ===
         self.id_name = config.get("id_name", None)
@@ -210,7 +210,7 @@ class MultimodalCNN(pl.LightningModule):
         save_path: Union[str, Path],
         sample_batch: Dict[str, Union[torch.Tensor, List]],
     ):
-        class MultimodalCNNONNXWrapper(nn.Module):
+        class BimodalCNNONNXWrapper(nn.Module):
             def __init__(self, model: MultimodalCNN):
                 super().__init__()
                 self.model = model

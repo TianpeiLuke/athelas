@@ -13,7 +13,6 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 import lightning.pytorch as pl
 
-
 from transformers import (
     get_linear_schedule_with_warmup,
     get_constant_schedule_with_warmup,
@@ -21,35 +20,61 @@ from transformers import (
 import onnx
 
 from ..utils.dist_utils import all_gather, get_rank
-from ..tabular.pl_tab_ae import TabAE  # Or TabularEmbeddingModule
+from ..tabular.pl_tab_ae import TabAE
 from ..text.pl_bert import TextBertBase
 from ..utils.pl_model_plots import compute_metrics
 
 # =================== Logging Setup =================================
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)  # <-- THIS LINE IS MISSING
-
+logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
 handler.setLevel(logging.INFO)
-formatter = logging.Formatter("%(levelname)s - %(message)s")
-handler.setFormatter(formatter)
+handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
 logger.addHandler(handler)
 logger.propagate = False
 
 
-class MultimodalBert(pl.LightningModule):
+class MixtureOfExperts(nn.Module):
+    """
+    Mixture of Experts module to combine text and tabular features.
+    """
+
+    def __init__(self, text_dim, tab_dim, fusion_dim):
+        super().__init__()
+        self.text_proj = (
+            nn.Linear(text_dim, fusion_dim) if text_dim != fusion_dim else nn.Identity()
+        )
+        self.tab_proj = (
+            nn.Linear(tab_dim, fusion_dim) if tab_dim != fusion_dim else nn.Identity()
+        )
+        self.router = nn.Sequential(nn.Linear(fusion_dim * 2, 2), nn.Softmax(dim=-1))
+
+    def forward(self, text_features, tab_features):
+        # Project features to the same dimension
+        txt_feat = self.text_proj(text_features)
+        tab_feat = self.tab_proj(tab_features)
+        # Compute routing weights
+        concat_experts = torch.cat([txt_feat, tab_feat], dim=1)
+        weights = self.router(concat_experts)
+        # Weighted combination of experts
+        w_txt = weights[:, 0].unsqueeze(1)
+        w_tab = weights[:, 1].unsqueeze(1)
+        fused = w_txt * txt_feat + w_tab * tab_feat
+        return fused
+
+
+class BimodalBertMoE(pl.LightningModule):
     def __init__(
         self,
         config: Dict[str, Union[int, float, str, bool, List[str], torch.FloatTensor]],
     ):
         super().__init__()
         self.config = config
-        self.model_class = "multimodal_bert"
+        self.model_class = "bimodal_moe"
 
         # === Core configuration ===
         self.id_name = config.get("id_name", None)
         self.label_name = config["label_name"]
-        # Use configurable key names for text input
         self.text_input_ids_key = config.get("text_input_ids_key", "input_ids")
         self.text_attention_mask_key = config.get(
             "text_attention_mask_key", "attention_mask"
@@ -58,14 +83,13 @@ class MultimodalBert(pl.LightningModule):
         self.text_attention_mask = (
             config["text_name"] + "_processed_" + self.text_attention_mask_key
         )
-        self.tab_field_list = config.get("tab_field_list", None)
+        self.tab_field_list = config.get("tab_field_list", [])
 
         self.is_binary = config.get("is_binary", True)
         self.task = "binary" if self.is_binary else "multiclass"
         self.num_classes = 2 if self.is_binary else config.get("num_classes", 2)
         self.metric_choices = config.get("metric_choices", ["accuracy", "f1_score"])
 
-        # ===== transformed label (multiclass case) =======
         if not self.is_binary and self.num_classes > 2:
             self.label_name_transformed = self.label_name + "_processed"
         else:
@@ -78,69 +102,70 @@ class MultimodalBert(pl.LightningModule):
         self.warmup_steps = config.get("warmup_steps", 0)
         self.run_scheduler = config.get("run_scheduler", True)
 
-        # For storing predictions and evaluation info
+        # For storing preds/labels
         self.id_lst, self.pred_lst, self.label_lst = [], [], []
         self.test_output_folder = None
         self.test_has_label = False
 
         # === Sub-networks ===
-        self.tab_subnetwork = (
-            TabAE(config) if self.tab_field_list else None
-        )  # Or TabularEmbeddingModule
+        self.tab_subnetwork = TabAE(config) if self.tab_field_list else None
         tab_dim = self.tab_subnetwork.output_tab_dim if self.tab_subnetwork else 0
 
         self.text_subnetwork = TextBertBase(config)
         text_dim = self.text_subnetwork.output_text_dim
 
-        # === Final classifier ===
-        self.final_merge_network = nn.Sequential(
+        # === Mixture-of-Experts fusion ===
+        fusion_dim = config.get("fusion_dim", max(text_dim, tab_dim))
+        self.moe_fusion = MixtureOfExperts(text_dim, tab_dim, fusion_dim)
+
+        # Final classifier on fused vector
+        self.classifier = nn.Sequential(
             nn.ReLU(),
-            nn.Linear(tab_dim + text_dim, self.num_classes),
+            nn.Linear(fusion_dim, self.num_classes),
         )
 
         # === Loss function ===
         weights = config.get("class_weights", [1.0] * self.num_classes)
-        # If weights are shorter than num_classes, pad with 1.0
         if len(weights) != self.num_classes:
-            print(
-                f"[Warning] class_weights length ({len(weights)}) does not match num_classes ({self.num_classes}). Auto-padding with 1.0."
+            logger.warning(
+                f"class_weights length {len(weights)} != num_classes {self.num_classes}; auto-padding"
             )
             weights = weights + [1.0] * (self.num_classes - len(weights))
-
-        weights_tensor = torch.tensor(weights[: self.num_classes], dtype=torch.float)
-        self.register_buffer("class_weights_tensor", weights_tensor)
+        wt = torch.tensor(weights[: self.num_classes], dtype=torch.float)
+        self.register_buffer("class_weights_tensor", wt)
         self.loss_op = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
 
         self.save_hyperparameters()
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """
-        Forward pass with batch input.
-        Expects pre-tokenized inputs and tabular data as a dictionary.
-        """
+        # prepare tabular data if present
         tab_data = (
-            self.tab_subnetwork.combine_tab_data(batch) if self.tab_subnetwork else None
+            self.tab_subnetwork.combine_tab_data(batch).float()
+            if self.tab_subnetwork
+            else None
         )
         return self._forward_impl(batch, tab_data)
 
     def _forward_impl(self, batch, tab_data) -> torch.Tensor:
         device = next(self.parameters()).device
-        # Use configurable key names to access text data]
+
+        # — Text expert — [B, text_dim]
         text_out = self.text_subnetwork(batch)
 
+        # — Tabular expert — [B, tab_dim]
         if tab_data is not None:
-            tab_data = tab_data.float()  # Ensure tab_data is on the correct device
-            tab_out = self.tab_subnetwork(tab_data)  # [B, D]
+            tab_out = self.tab_subnetwork(tab_data.to(device))
         else:
-            tab_out = torch.zeros((text_out.size(0), 0), device=device)
+            tab_out = torch.zeros_like(text_out)
 
-        combined = torch.cat([text_out, tab_out], dim=1)
-        return self.final_merge_network(combined)
+        # — Mixture-of-Experts fusion —
+        fused = self.moe_fusion(text_out, tab_out)
+
+        # — Classification — [B, num_classes]
+        logits = self.classifier(fused)
+        return logits
 
     def configure_optimizers(self):
-        """
-        Optimizer + LR scheduler (AdamW + linear warmup)
-        """
         no_decay = ["bias", "LayerNorm.weight"]
         params = [
             {
@@ -287,158 +312,64 @@ class MultimodalBert(pl.LightningModule):
         _, preds, labels = self.run_epoch(batch, mode)
         return (preds, labels) if mode == "test" else preds
 
-    # === Export ===
     def export_to_onnx(
         self,
         save_path: Union[str, Path],
         sample_batch: Dict[str, Union[torch.Tensor, List]],
     ):
-        class MultimodalBertONNXWrapper(nn.Module):
-            def __init__(self, model: MultimodalBert):
+        class Wrapper(nn.Module):
+            def __init__(self, model):
                 super().__init__()
                 self.model = model
-                self.text_key = model.text_name
-                self.mask_key = model.text_attention_mask
+                self.text_k = model.text_name
+                self.mask_k = model.text_attention_mask
                 self.tab_keys = model.tab_field_list or []
 
-            def forward(
-                self,
-                input_ids: torch.Tensor,
-                attention_mask: torch.Tensor,
-                *tab_tensors: torch.Tensor,
-            ):
-                batch = {
-                    self.text_key: input_ids,
-                    self.mask_key: attention_mask,
-                }
-                for name, tensor in zip(self.tab_keys, tab_tensors):
-                    batch[name] = tensor
-                # output probability scores instead of logits
-                logits = self.model(batch)
+            def forward(self, input_ids, attention_mask, *tab_tensors):
+                b = {self.text_k: input_ids, self.mask_k: attention_mask}
+                for k, t in zip(self.tab_keys, tab_tensors):
+                    b[k] = t
+                logits = self.model(b)
                 return nn.functional.softmax(logits, dim=1)
 
         self.eval()
+        m = self.module if isinstance(self, FSDP) else self
+        wrapper = Wrapper(m.to("cpu")).eval()
 
-        # Unwrap from FSDP if needed
-        model_to_export = self.module if isinstance(self, FSDP) else self
-        model_to_export = model_to_export.to("cpu")
-        wrapper = MultimodalBertONNXWrapper(model_to_export).to("cpu").eval()
-
-        # === Prepare input tensor list ===
+        # prepare input names & tensors
         input_names = [self.text_name, self.text_attention_mask]
-        input_tensors = []
+        input_tensors = [
+            sample_batch[self.text_name].to("cpu"),
+            sample_batch[self.text_attention_mask].to("cpu"),
+        ]
+        B = input_tensors[0].shape[0]
 
-        # Handle text inputs
-        input_ids_tensor = sample_batch.get(self.text_name)
-        attention_mask_tensor = sample_batch.get(self.text_attention_mask)
-
-        if not isinstance(input_ids_tensor, torch.Tensor) or not isinstance(
-            attention_mask_tensor, torch.Tensor
-        ):
-            raise ValueError(
-                "Both input_ids and attention_mask must be torch.Tensor in sample_batch."
+        for name in self.tab_field_list:
+            input_names.append(name)
+            v = sample_batch[name]
+            t = (
+                v.to("cpu").float()
+                if isinstance(v, torch.Tensor)
+                else torch.tensor(v, dtype=torch.float32).view(B, -1)
             )
+            input_tensors.append(t)
 
-        input_ids_tensor = input_ids_tensor.to("cpu")
-        attention_mask_tensor = attention_mask_tensor.to("cpu")
+        # dynamic axes
+        dynamic_axes = {
+            n: {0: "batch", **{i: f"dim_{i}" for i in range(1, t.ndim)}}
+            for n, t in zip(input_names, input_tensors)
+        }
+        dynamic_axes["probs"] = {0: "batch"}
 
-        input_tensors.append(input_ids_tensor)
-        input_tensors.append(attention_mask_tensor)
-
-        batch_size = input_ids_tensor.shape[0]
-
-        # Handle tabular inputs
-        if self.tab_field_list:
-            for field in self.tab_field_list:
-                input_names.append(field)
-                value = sample_batch.get(field)
-                if isinstance(value, torch.Tensor):
-                    value = value.to("cpu").float()
-                    if value.shape[0] != batch_size:
-                        raise ValueError(
-                            f"Tensor for field '{field}' has batch size {value.shape[0]} but expected {batch_size}"
-                        )
-                    input_tensors.append(value)
-                elif isinstance(value, list) and all(
-                    isinstance(x, (int, float)) for x in value
-                ):
-                    tensor_val = (
-                        torch.tensor(value, dtype=torch.float32)
-                        .view(batch_size, -1)
-                        .to("cpu")
-                    )
-                    input_tensors.append(tensor_val)
-                else:
-                    logger.warning(
-                        f"Field '{field}' has unsupported type ({type(value)}); replacing with zeros."
-                    )
-                    input_tensors.append(
-                        torch.zeros((batch_size, 1), dtype=torch.float32).to("cpu")
-                    )
-
-        # Final check
-        for name, tensor in zip(input_names, input_tensors):
-            assert tensor.shape[0] == batch_size, (
-                f"Inconsistent batch size for input '{name}': {tensor.shape}"
-            )
-
-        dynamic_axes = {}
-        for name, tensor in zip(input_names, input_tensors):
-            # Assume at least first dimension (batch) is dynamic
-            axes = {0: "batch"}
-            # Make all further dims dynamic as well
-            for i in range(1, tensor.dim()):
-                axes[i] = f"dim_{i}"
-            dynamic_axes[name] = axes
-
-        try:
-            torch.onnx.export(
-                wrapper,
-                tuple(input_tensors),
-                f=save_path,
-                input_names=input_names,
-                output_names=["probs"],
-                dynamic_axes=dynamic_axes,
-                opset_version=14,
-            )
-            onnx_model = onnx.load(str(save_path))
-            onnx.checker.check_model(onnx_model)
-            logger.info(f"ONNX model exported and verified at {save_path}")
-        except Exception as e:
-            logger.warning(f"ONNX export failed: {e}")
-
-    def export_to_torchscript(
-        self,
-        save_path: Union[str, Path],
-        sample_batch: Dict[str, Union[torch.Tensor, List]],
-    ):
-        self.eval()
-
-        # Clean the sample batch: remove list of strings, convert list of numbers to tensors
-        sample_batch_tensorized = {}
-        for k, v in sample_batch.items():
-            if isinstance(v, list):
-                if all(isinstance(x, str) for x in v):
-                    continue  # Skip string list (e.g., dialogue)
-                sample_batch_tensorized[k] = torch.tensor(v).to("cpu")
-            elif isinstance(v, torch.Tensor):
-                sample_batch_tensorized[k] = v.to("cpu")
-
-        # Unwrap from FSDP if needed
-        model_to_export = self
-        if isinstance(self, FSDP):
-            model_to_export = self.module  # Unwrap the actual LightningModule
-
-        model_to_export = model_to_export.to("cpu")
-        model_to_export.eval()
-
-        # Trace the forward method using the cleaned sample batch
-        try:
-            scripted_model = torch.jit.trace(
-                model_to_export, (sample_batch_tensorized,)
-            )
-        except Exception as e:
-            logger.warning(f"Trace failed: {e}. Trying script...")
-            scripted_model = torch.jit.script(model_to_export)
-        scripted_model.save(str(save_path))
-        logger.info(f"TorchScript model saved to: {save_path}")
+        torch.onnx.export(
+            wrapper,
+            tuple(input_tensors),
+            str(save_path),
+            input_names=input_names,
+            output_names=["probs"],
+            dynamic_axes=dynamic_axes,
+            opset_version=14,
+        )
+        onnx_model = onnx.load(str(save_path))
+        onnx.checker.check_model(onnx_model)
+        logger.info(f"ONNX model exported and verified at {save_path}")
