@@ -64,7 +64,7 @@ class TextBertClassificationConfig(BaseModel):
         if not is_binary and num_classes < 2:
             raise ValueError("For multiclass classification, num_classes must be >= 2")
         return num_classes
-    
+
 
 class TextBertClassification(pl.LightningModule):
     def __init__(self, config: Union[Dict, TextBertClassificationConfig]):
@@ -92,7 +92,9 @@ class TextBertClassification(pl.LightningModule):
         self.test_output_folder: Optional[str] = None
         self.test_has_label: bool = False
         self.save_hyperparameters(logger=False)
-        logger.info("Initialized TextBertClassification with model %s", self.model_class)
+        logger.info(
+            "Initialized TextBertClassification with model %s", self.model_class
+        )
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         input_ids = batch[self.config.text_name]
@@ -115,7 +117,7 @@ class TextBertClassification(pl.LightningModule):
         for p in encoder.pooler.parameters():
             p.requires_grad = True
         if self.config.reinit_layers > 0:
-            for layer in encoder.encoder.layer[-self.config.reinit_layers:]:
+            for layer in encoder.encoder.layer[-self.config.reinit_layers :]:
                 for module in layer.modules():
                     if isinstance(module, (nn.Linear, nn.Embedding)):
                         module.weight.data.normal_(
@@ -130,22 +132,44 @@ class TextBertClassification(pl.LightningModule):
     def configure_optimizers(self):
         no_decay = ["bias", "LayerNorm.weight"]
         grouped_params = [
-            {"params": [p for n, p in self.bert.named_parameters() if not any(nd in n for nd in no_decay)],
-             "weight_decay": self.config.weight_decay},
-            {"params": [p for n, p in self.bert.named_parameters() if any(nd in n for nd in no_decay)],
-             "weight_decay": 0.0},
+            {
+                "params": [
+                    p
+                    for n, p in self.bert.named_parameters()
+                    if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": self.config.weight_decay,
+            },
+            {
+                "params": [
+                    p
+                    for n, p in self.bert.named_parameters()
+                    if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
         ]
-        optimizer = AdamW(grouped_params, lr=self.config.lr, eps=self.config.adam_epsilon)
+        optimizer = AdamW(
+            grouped_params, lr=self.config.lr, eps=self.config.adam_epsilon
+        )
         total_steps = self.trainer.estimated_stepping_batches if self.trainer else None
-        scheduler = (get_linear_schedule_with_warmup if self.config.run_scheduler else get_constant_schedule_with_warmup)(
-            optimizer, num_warmup_steps=self.config.warmup_steps, num_training_steps=total_steps
+        scheduler = (
+            get_linear_schedule_with_warmup
+            if self.config.run_scheduler
+            else get_constant_schedule_with_warmup
+        )(
+            optimizer,
+            num_warmup_steps=self.config.warmup_steps,
+            num_training_steps=total_steps,
         )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
     def configure_callbacks(self):
         return [
             EarlyStopping(monitor="val_loss", patience=3, mode="min"),
-            ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1, save_weights_only=True),
+            ModelCheckpoint(
+                monitor="val_loss", mode="min", save_top_k=1, save_weights_only=True
+            ),
         ]
 
     def add_loss_op(self, loss_op: Optional[nn.Module] = None):
@@ -153,7 +177,9 @@ class TextBertClassification(pl.LightningModule):
             self.loss_op = loss_op
         else:
             if self.config.is_binary:
-                weight = torch.tensor([1.0, self.config.get("pos_weight", 1.0)]).to(self.device)
+                weight = torch.tensor([1.0, self.config.get("pos_weight", 1.0)]).to(
+                    self.device
+                )
                 self.loss_op = nn.CrossEntropyLoss(weight=weight)
             else:
                 self.loss_op = nn.CrossEntropyLoss()
@@ -164,7 +190,9 @@ class TextBertClassification(pl.LightningModule):
         labels = batch.get(self.config.label_name) if stage != "pred" else None
         if labels is not None and not isinstance(labels, torch.Tensor):
             labels = torch.tensor(labels, device=self.device)
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+        outputs = self.bert(
+            input_ids=input_ids, attention_mask=attention_mask, labels=labels
+        )
         logits = outputs.logits
         loss = outputs.loss if labels is not None else None
         preds = torch.softmax(logits, dim=1)
@@ -194,12 +222,21 @@ class TextBertClassification(pl.LightningModule):
     def on_validation_epoch_end(self):
         preds = torch.tensor(sum(all_gather(self.pred_lst), []), device=self.device)
         labels = torch.tensor(sum(all_gather(self.label_lst), []), device=self.device)
-        metrics = compute_metrics(preds, labels, self.config.metric_choices, self.config.task, self.config.num_classes, "val")
+        metrics = compute_metrics(
+            preds,
+            labels,
+            self.config.metric_choices,
+            self.config.task,
+            self.config.num_classes,
+            "val",
+        )
         self.log_dict(metrics, prog_bar=True)
 
     def test_step(self, batch, batch_idx: int):
         self.test_has_label = self.config.label_name in batch
-        loss, preds, labels = self._shared_step(batch, "test" if self.test_has_label else "pred")
+        loss, preds, labels = self._shared_step(
+            batch, "test" if self.test_has_label else "pred"
+        )
         self.log("test_loss", loss, sync_dist=True, prog_bar=True)
         if self.config.id_name and self.config.id_name in batch:
             self.id_lst.extend(batch[self.config.id_name])
@@ -216,7 +253,9 @@ class TextBertClassification(pl.LightningModule):
         )
 
     @rank_zero_only
-    def save_predictions_to_file(self, output_folder, id_name, pred_list, label_list=None):
+    def save_predictions_to_file(
+        self, output_folder, id_name, pred_list, label_list=None
+    ):
         os.makedirs(output_folder, exist_ok=True)
         df = pd.DataFrame({"prob": pred_list})
         if id_name:
@@ -229,11 +268,20 @@ class TextBertClassification(pl.LightningModule):
 
     def on_test_epoch_end(self):
         final_preds = sum(all_gather(self.pred_lst), [])
-        final_labels = sum(all_gather(self.label_lst), []) if self.test_has_label else None
+        final_labels = (
+            sum(all_gather(self.label_lst), []) if self.test_has_label else None
+        )
         if self.test_has_label:
             preds_tensor = torch.tensor(final_preds, device=self.device)
             labels_tensor = torch.tensor(final_labels, device=self.device)
-            metrics = compute_metrics(preds_tensor, labels_tensor, self.config.metric_choices, self.config.task, self.config.num_classes, "test")
+            metrics = compute_metrics(
+                preds_tensor,
+                labels_tensor,
+                self.config.metric_choices,
+                self.config.task,
+                self.config.num_classes,
+                "test",
+            )
             self.log_dict(metrics, sync_dist=True, prog_bar=True)
         self.save_predictions_to_file(
             self.test_output_folder,
@@ -257,11 +305,20 @@ class TextBertClassification(pl.LightningModule):
         }
         torch.onnx.export(
             self.bert,
-            (dummy_input[self.config.text_input_ids_key], dummy_input[self.config.text_attention_mask_key]),
+            (
+                dummy_input[self.config.text_input_ids_key],
+                dummy_input[self.config.text_attention_mask_key],
+            ),
             save_path,
-            input_names=[self.config.text_input_ids_key, self.config.text_attention_mask_key],
+            input_names=[
+                self.config.text_input_ids_key,
+                self.config.text_attention_mask_key,
+            ],
             output_names=["logits"],
-            dynamic_axes={self.config.text_input_ids_key: {0: "batch_size"}, self.config.text_attention_mask_key: {0: "batch_size"}},
+            dynamic_axes={
+                self.config.text_input_ids_key: {0: "batch_size"},
+                self.config.text_attention_mask_key: {0: "batch_size"},
+            },
             opset_version=opset_version,
         )
 
@@ -273,4 +330,3 @@ class TextBertClassification(pl.LightningModule):
         )
         traced = torch.jit.trace(self.bert, example_inputs)
         traced.save(save_path)
-

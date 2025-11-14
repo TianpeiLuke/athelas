@@ -38,71 +38,83 @@ class CrossAttentionFusion(nn.Module):
     def __init__(self, hidden_dim: int, num_heads: int = 4):
         super().__init__()
         # text queries attend to tabular keys/values
-        self.text2tab = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+        self.text2tab = nn.MultiheadAttention(
+            embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
+        )
         # tabular queries attend to text keys/values
-        self.tab2text = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+        self.tab2text = nn.MultiheadAttention(
+            embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
+        )
         self.text_norm = nn.LayerNorm(hidden_dim)
-        self.tab_norm  = nn.LayerNorm(hidden_dim)
+        self.tab_norm = nn.LayerNorm(hidden_dim)
 
     def forward(self, text_seq: torch.Tensor, tab_seq: torch.Tensor):
         # text_seq: [B, 1, H], tab_seq: [B, 1, H]
         t2t, _ = self.text2tab(query=text_seq, key=tab_seq, value=tab_seq)
         text_out = self.text_norm(text_seq + t2t)
-        tab2, _   = self.tab2text(query=tab_seq, key=text_out, value=text_out)
-        tab_out  = self.tab_norm(tab_seq + tab2)
+        tab2, _ = self.tab2text(query=tab_seq, key=text_out, value=text_out)
+        tab_out = self.tab_norm(tab_seq + tab2)
         return text_out, tab_out
 
 
 class MultimodalBertCrossAttn(pl.LightningModule):
-    def __init__(self, config: Dict[str, Union[int, float, str, bool, List[str], torch.FloatTensor]]):
+    def __init__(
+        self,
+        config: Dict[str, Union[int, float, str, bool, List[str], torch.FloatTensor]],
+    ):
         super().__init__()
-        self.config      = config
+        self.config = config
         self.model_class = "multimodal_cross_att"
 
         # — Core config —
-        self.id_name      = config.get("id_name")
-        self.label_name   = config["label_name"]
-        self.text_input_ids_key   = config.get("text_input_ids_key", "input_ids")
-        self.text_attention_mask_key = config.get("text_attention_mask_key", "attention_mask")
-        self.text_name            = config["text_name"] + "_processed_" + self.text_input_ids_key
-        self.text_attention_mask  = config["text_name"] + "_processed_" + self.text_attention_mask_key
-        self.tab_field_list       = config.get("tab_field_list", [])
+        self.id_name = config.get("id_name")
+        self.label_name = config["label_name"]
+        self.text_input_ids_key = config.get("text_input_ids_key", "input_ids")
+        self.text_attention_mask_key = config.get(
+            "text_attention_mask_key", "attention_mask"
+        )
+        self.text_name = config["text_name"] + "_processed_" + self.text_input_ids_key
+        self.text_attention_mask = (
+            config["text_name"] + "_processed_" + self.text_attention_mask_key
+        )
+        self.tab_field_list = config.get("tab_field_list", [])
 
-        self.is_binary    = config.get("is_binary", True)
-        self.task         = "binary" if self.is_binary else "multiclass"
-        self.num_classes  = 2 if self.is_binary else config.get("num_classes", 2)
-        self.metric_choices = config.get("metric_choices", ["accuracy","f1_score"])
+        self.is_binary = config.get("is_binary", True)
+        self.task = "binary" if self.is_binary else "multiclass"
+        self.num_classes = 2 if self.is_binary else config.get("num_classes", 2)
+        self.metric_choices = config.get("metric_choices", ["accuracy", "f1_score"])
 
         if not self.is_binary and self.num_classes > 2:
             self.label_name_transformed = self.label_name + "_processed"
         else:
             self.label_name_transformed = self.label_name
 
-        self.model_path    = config.get("model_path", "")
-        self.lr            = config.get("lr", 2e-5)
-        self.weight_decay  = config.get("weight_decay", 0.0)
-        self.adam_epsilon  = config.get("adam_epsilon", 1e-8)
-        self.warmup_steps  = config.get("warmup_steps", 0)
+        self.model_path = config.get("model_path", "")
+        self.lr = config.get("lr", 2e-5)
+        self.weight_decay = config.get("weight_decay", 0.0)
+        self.adam_epsilon = config.get("adam_epsilon", 1e-8)
+        self.warmup_steps = config.get("warmup_steps", 0)
         self.run_scheduler = config.get("run_scheduler", True)
 
         # For preds/labels collection
         self.id_lst, self.pred_lst, self.label_lst = [], [], []
         self.test_output_folder = None
-        self.test_has_label     = False
+        self.test_has_label = False
 
         # — Sub-networks —
-        self.tab_subnetwork  = TabAE(config) if self.tab_field_list else None
-        tab_dim              = self.tab_subnetwork.output_tab_dim if self.tab_subnetwork else 0
+        self.tab_subnetwork = TabAE(config) if self.tab_field_list else None
+        tab_dim = self.tab_subnetwork.output_tab_dim if self.tab_subnetwork else 0
 
         self.text_subnetwork = TextBertBase(config)
-        text_dim             = self.text_subnetwork.output_text_dim
+        text_dim = self.text_subnetwork.output_text_dim
 
         # — Cross-attention fusion —
         hidden_dim = config["hidden_common_dim"]
-        num_heads  = config.get("num_heads", 4)
+        num_heads = config.get("num_heads", 4)
         # ensure both branches embed to same hidden_dim:
-        assert text_dim == hidden_dim and tab_dim == hidden_dim, \
+        assert text_dim == hidden_dim and tab_dim == hidden_dim, (
             f"text_dim ({text_dim}) and tab_dim ({tab_dim}) must both = hidden_common_dim ({hidden_dim})"
+        )
         self.cross_att = CrossAttentionFusion(hidden_dim, num_heads)
 
         # — Final classifier on concat([text,tab]) after fusion —
@@ -115,7 +127,9 @@ class MultimodalBertCrossAttn(pl.LightningModule):
         # — Loss function —
         weights = config.get("class_weights", [1.0] * self.num_classes)
         if len(weights) != self.num_classes:
-            logger.warning(f"class_weights length {len(weights)} != num_classes {self.num_classes}; auto-padding")
+            logger.warning(
+                f"class_weights length {len(weights)} != num_classes {self.num_classes}; auto-padding"
+            )
             weights = weights + [1.0] * (self.num_classes - len(weights))
         wt = torch.tensor(weights[: self.num_classes], dtype=torch.float)
         self.register_buffer("class_weights_tensor", wt)
@@ -145,7 +159,7 @@ class MultimodalBertCrossAttn(pl.LightningModule):
 
         # — unsqueeze to seq-length=1 —
         text_seq = text_out.unsqueeze(1)  # [B, 1, H]
-        tab_seq  = tab_out.unsqueeze(1)   # [B, 1, H]
+        tab_seq = tab_out.unsqueeze(1)  # [B, 1, H]
 
         # — cross-attention fusion —
         text_fused, tab_fused = self.cross_att(text_seq, tab_seq)
@@ -153,22 +167,30 @@ class MultimodalBertCrossAttn(pl.LightningModule):
 
         # — squeeze back to [B,H] —
         text_feat = text_fused.squeeze(1)  # [B, H]
-        tab_feat  = tab_fused.squeeze(1)   # [B, H]
+        tab_feat = tab_fused.squeeze(1)  # [B, H]
 
         # — concat & classify —
         merged = torch.cat([text_feat, tab_feat], dim=1)  # [B, 2H]
-        logits = self.final_merge_network(merged)         # [B, num_classes]
+        logits = self.final_merge_network(merged)  # [B, num_classes]
         return logits
 
     def configure_optimizers(self):
-        no_decay = ["bias","LayerNorm.weight"]
+        no_decay = ["bias", "LayerNorm.weight"]
         params = [
             {
-                "params": [p for n,p in self.named_parameters() if not any(nd in n for nd in no_decay)],
+                "params": [
+                    p
+                    for n, p in self.named_parameters()
+                    if not any(nd in n for nd in no_decay)
+                ],
                 "weight_decay": self.weight_decay,
             },
             {
-                "params": [p for n,p in self.named_parameters() if any(nd in n for nd in no_decay)],
+                "params": [
+                    p
+                    for n, p in self.named_parameters()
+                    if any(nd in n for nd in no_decay)
+                ],
                 "weight_decay": 0.0,
             },
         ]
@@ -179,29 +201,38 @@ class MultimodalBertCrossAttn(pl.LightningModule):
                 optimizer, self.warmup_steps, self.trainer.estimated_stepping_batches
             )
             if self.run_scheduler
-            else get_constant_schedule_with_warmup(optimizer, num_warmup_steps=self.warmup_steps)
+            else get_constant_schedule_with_warmup(
+                optimizer, num_warmup_steps=self.warmup_steps
+            )
         )
-        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+        }
 
     def run_epoch(self, batch, stage):
-        #labels = batch.get(self.label_name) if stage != "pred" else None
+        # labels = batch.get(self.label_name) if stage != "pred" else None
         labels = batch.get(self.label_name_transformed) if stage != "pred" else None
 
         if labels is not None:
             if not isinstance(labels, torch.Tensor):
                 labels = torch.tensor(labels, device=self.device)
-                
+
             # Important: CrossEntropyLoss always expects LongTensor (class index)
             if self.is_binary:
                 labels = labels.long()  # Binary: Expects LongTensor (class indices)
-            else:    
+            else:
                 # Multiclass: Check if labels are one-hot encoded
                 if labels.dim() > 1:  # Assuming one-hot is 2D
                     labels = labels.argmax(dim=1).long()  # Convert one-hot to indices
                 else:
-                    labels = labels.long()  # Multiclass: Expects LongTensor (class indices)
+                    labels = (
+                        labels.long()
+                    )  # Multiclass: Expects LongTensor (class indices)
 
-        tab_data = self.tab_subnetwork.combine_tab_data(batch) if self.tab_subnetwork else None
+        tab_data = (
+            self.tab_subnetwork.combine_tab_data(batch) if self.tab_subnetwork else None
+        )
 
         logits = self._forward_impl(batch, tab_data)
         loss = self.loss_op(logits, labels) if stage != "pred" else None
@@ -231,7 +262,12 @@ class MultimodalBertCrossAttn(pl.LightningModule):
         preds = torch.tensor(sum(all_gather(self.pred_lst), []))
         labels = torch.tensor(sum(all_gather(self.label_lst), []))
         metrics = compute_metrics(
-            preds.to(device), labels.to(device), self.metric_choices, self.task, self.num_classes, "val"
+            preds.to(device),
+            labels.to(device),
+            self.metric_choices,
+            self.task,
+            self.num_classes,
+            "val",
         )
         self.log_dict(metrics, prog_bar=True)
 
@@ -252,9 +288,10 @@ class MultimodalBertCrossAttn(pl.LightningModule):
         self.pred_lst.clear()
         self.label_lst.clear()
         timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        self.test_output_folder = Path(self.model_path) / f"{self.model_class}-{timestamp}"
+        self.test_output_folder = (
+            Path(self.model_path) / f"{self.model_class}-{timestamp}"
+        )
         self.test_output_folder.mkdir(parents=True, exist_ok=True)
-
 
     def on_test_epoch_end(self):
         import pandas as pd
@@ -264,9 +301,11 @@ class MultimodalBertCrossAttn(pl.LightningModule):
         if self.is_binary:
             results["prob"] = self.pred_lst  # Keep "prob" for binary
         else:
-            results["prob"] = [json.dumps(p) for p in self.pred_lst] # convert the [num_class] list into a string
-        
-        #results = {"prob": self.pred_lst}
+            results["prob"] = [
+                json.dumps(p) for p in self.pred_lst
+            ]  # convert the [num_class] list into a string
+
+        # results = {"prob": self.pred_lst}
         if self.test_has_label:
             results["label"] = self.label_lst
         if self.id_name:
@@ -276,22 +315,24 @@ class MultimodalBertCrossAttn(pl.LightningModule):
         test_file = self.test_output_folder / f"test_result_rank{self.global_rank}.tsv"
         df.to_csv(test_file, sep="\t", index=False)
         print(f"[Rank {self.global_rank}] Saved test results to {test_file}")
-        
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         mode = "test" if self.label_name in batch else "pred"
         _, preds, labels = self.run_epoch(batch, mode)
         return (preds, labels) if mode == "test" else preds
 
-
-    def export_to_onnx(self, save_path: Union[str, Path], sample_batch: Dict[str, Union[torch.Tensor,List]]):
+    def export_to_onnx(
+        self,
+        save_path: Union[str, Path],
+        sample_batch: Dict[str, Union[torch.Tensor, List]],
+    ):
         class Wrapper(nn.Module):
             def __init__(self, model):
                 super().__init__()
-                self.model   = model
-                self.text_k  = model.text_name
-                self.mask_k  = model.text_attention_mask
-                self.tab_keys= model.tab_field_list or []
+                self.model = model
+                self.text_k = model.text_name
+                self.mask_k = model.text_attention_mask
+                self.tab_keys = model.tab_field_list or []
 
             def forward(self, input_ids, attention_mask, *tab_tensors):
                 batch = {self.text_k: input_ids, self.mask_k: attention_mask}
@@ -305,7 +346,7 @@ class MultimodalBertCrossAttn(pl.LightningModule):
         wrapper = Wrapper(m.to("cpu")).eval()
 
         # prepare inputs
-        input_names   = [self.text_name, self.text_attention_mask]
+        input_names = [self.text_name, self.text_attention_mask]
         input_tensors = [
             sample_batch[self.text_name].to("cpu"),
             sample_batch[self.text_attention_mask].to("cpu"),
@@ -315,14 +356,19 @@ class MultimodalBertCrossAttn(pl.LightningModule):
         for name in self.tab_field_list:
             input_names.append(name)
             v = sample_batch[name]
-            t = v.to("cpu").float() if isinstance(v,torch.Tensor)\
-                else torch.tensor(v,dtype=torch.float32).view(batch_size,-1)
+            t = (
+                v.to("cpu").float()
+                if isinstance(v, torch.Tensor)
+                else torch.tensor(v, dtype=torch.float32).view(batch_size, -1)
+            )
             input_tensors.append(t)
 
         # dynamic axes for inputs & output
-        dynamic_axes = {n: {0:"batch", **{i:f"dim_{i}" for i in range(1,t.ndim)}} 
-                        for n,t in zip(input_names, input_tensors)}
-        dynamic_axes["probs"] = {0:"batch"}
+        dynamic_axes = {
+            n: {0: "batch", **{i: f"dim_{i}" for i in range(1, t.ndim)}}
+            for n, t in zip(input_names, input_tensors)
+        }
+        dynamic_axes["probs"] = {0: "batch"}
 
         torch.onnx.export(
             wrapper,

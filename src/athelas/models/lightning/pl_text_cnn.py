@@ -16,7 +16,12 @@ from .dist_utils import all_gather
 
 
 class TextCNN(pl.LightningModule):
-    def __init__(self, config: Dict[str, Union[int, float, str, bool, List[str]]], vocab_size: int, word_embeddings: torch.FloatTensor):
+    def __init__(
+        self,
+        config: Dict[str, Union[int, float, str, bool, List[str]]],
+        vocab_size: int,
+        word_embeddings: torch.FloatTensor,
+    ):
         super().__init__()
         self.config = config
         self.model_class = "text_cnn"
@@ -49,22 +54,44 @@ class TextCNN(pl.LightningModule):
         if vocab_size != word_embeddings.shape[0]:
             raise ValueError("Mismatch between vocab size and embedding matrix")
         self.embeddings = nn.Embedding(vocab_size, self.embed_size)
-        self.embeddings.weight = nn.Parameter(word_embeddings, requires_grad=config.get("is_embeddings_trainable", True))
+        self.embeddings.weight = nn.Parameter(
+            word_embeddings, requires_grad=config.get("is_embeddings_trainable", True)
+        )
 
         # === Convolutional Layers ===
-        self.conv_output_dims = {k: self._compute_conv_output_dim(k, self.max_sen_len, self.num_layers) for k in self.kernel_size}
-        self.conv_input_dims = {k: self._compute_conv_input_dim(self.embed_size, self.num_channels, self.num_layers) for k in self.kernel_size}
-
-        self.convs = nn.ModuleList([
-            self._build_conv_layers(k, self.num_layers, self.num_channels, self.conv_input_dims[k], self.conv_output_dims[k])
+        self.conv_output_dims = {
+            k: self._compute_conv_output_dim(k, self.max_sen_len, self.num_layers)
             for k in self.kernel_size
-        ])
+        }
+        self.conv_input_dims = {
+            k: self._compute_conv_input_dim(
+                self.embed_size, self.num_channels, self.num_layers
+            )
+            for k in self.kernel_size
+        }
+
+        self.convs = nn.ModuleList(
+            [
+                self._build_conv_layers(
+                    k,
+                    self.num_layers,
+                    self.num_channels,
+                    self.conv_input_dims[k],
+                    self.conv_output_dims[k],
+                )
+                for k in self.kernel_size
+            ]
+        )
 
         self.output_text_dim = self.hidden_common_dim
-        self.network = self._build_text_subnetwork(len(self.kernel_size), self.num_channels, self.output_text_dim)
+        self.network = self._build_text_subnetwork(
+            len(self.kernel_size), self.num_channels, self.output_text_dim
+        )
 
         # === Loss Function ===
-        class_weights = torch.tensor(config.get("class_weights", [1.0] * self.num_classes))
+        class_weights = torch.tensor(
+            config.get("class_weights", [1.0] * self.num_classes)
+        )
         self.register_buffer("class_weights_tensor", class_weights)
         self.loss_op = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
 
@@ -80,7 +107,9 @@ class TextCNN(pl.LightningModule):
     def _compute_conv_input_dim(self, embed_size, num_channels, num_layers):
         return [embed_size] + num_channels[:-1]
 
-    def _build_conv_layers(self, kernel_size, num_layers, num_channels, input_dims, output_dim):
+    def _build_conv_layers(
+        self, kernel_size, num_layers, num_channels, input_dims, output_dim
+    ):
         layers = []
         for i in range(num_layers):
             layers.append(nn.Conv1d(input_dims[i], num_channels[i], kernel_size))
@@ -94,7 +123,7 @@ class TextCNN(pl.LightningModule):
     def _build_text_subnetwork(self, num_kernels, num_channels, output_text_dim):
         return nn.Sequential(
             nn.Dropout(self.dropout_keep),
-            nn.Linear(num_channels[-1] * num_kernels, output_text_dim)
+            nn.Linear(num_channels[-1] * num_kernels, output_text_dim),
         )
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
@@ -156,7 +185,14 @@ class TextCNN(pl.LightningModule):
         device = self.device
         preds = torch.tensor(sum(all_gather(self.pred_lst), []))
         labels = torch.tensor(sum(all_gather(self.label_lst), []))
-        metrics = compute_metrics(preds.to(device), labels.to(device), self.metric_choices, self.task, self.num_classes, "val")
+        metrics = compute_metrics(
+            preds.to(device),
+            labels.to(device),
+            self.metric_choices,
+            self.task,
+            self.num_classes,
+            "val",
+        )
         self.log_dict(metrics, prog_bar=True)
 
     def on_test_epoch_start(self):
@@ -164,7 +200,9 @@ class TextCNN(pl.LightningModule):
         self.pred_lst.clear()
         self.label_lst.clear()
         timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        self.test_output_folder = Path(self.model_path) / f"{self.model_class}-{timestamp}"
+        self.test_output_folder = (
+            Path(self.model_path) / f"{self.model_class}-{timestamp}"
+        )
         self.test_output_folder.mkdir(parents=True, exist_ok=True)
 
     def test_step(self, batch, batch_idx):
@@ -201,9 +239,13 @@ class TextCNN(pl.LightningModule):
         _, preds, labels = self.run_epoch(batch, mode)
         return preds if mode == "pred" else (preds, labels)
 
-    def export_to_onnx(self, save_path: Union[str, Path], sample_batch: Dict[str, Union[torch.Tensor, List]]):
+    def export_to_onnx(
+        self,
+        save_path: Union[str, Path],
+        sample_batch: Dict[str, Union[torch.Tensor, List]],
+    ):
         class TextCNNONNXWrapper(nn.Module):
-            def __init__(self, model: 'TextCNN'):
+            def __init__(self, model: "TextCNN"):
                 super().__init__()
                 self.model = model
 
@@ -213,13 +255,15 @@ class TextCNN(pl.LightningModule):
 
         self.eval()
 
-        model_to_export = self.module if hasattr(self, 'module') else self
+        model_to_export = self.module if hasattr(self, "module") else self
         model_to_export = model_to_export.to("cpu")
         wrapper = TextCNNONNXWrapper(model_to_export).to("cpu").eval()
 
         input_ids_tensor = sample_batch.get(self.text_name)
         if not isinstance(input_ids_tensor, torch.Tensor):
-            raise ValueError(f"Sample batch must provide {self.text_name} as a torch.Tensor.")
+            raise ValueError(
+                f"Sample batch must provide {self.text_name} as a torch.Tensor."
+            )
         input_ids_tensor = input_ids_tensor.to("cpu")
 
         input_names = [self.text_name]

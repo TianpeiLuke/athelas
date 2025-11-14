@@ -1,0 +1,788 @@
+#!/usr/bin/env python3
+import json
+import pandas as pd
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, List, Union, Tuple
+import logging
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.optim import AdamW
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+import lightning.pytorch as pl
+
+from transformers import (
+    get_linear_schedule_with_warmup,
+    get_constant_schedule_with_warmup,
+)
+import onnx
+
+from .dist_utils import all_gather, get_rank
+from .pl_tab_ae import TabAE  # Or TabularEmbeddingModule
+from .pl_bert import TextBertBase
+from .pl_model_plots import compute_metrics
+
+# =================== Logging Setup =================================
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+handler = logging.StreamHandler()
+handler.setLevel(logging.INFO)
+formatter = logging.Formatter("%(levelname)s - %(message)s")
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logger.propagate = False
+
+
+class BidirectionalCrossAttention(nn.Module):
+    """
+    Bidirectional cross-attention module that allows two modalities to attend to each other.
+    This creates enhanced representations by incorporating information from the other modality.
+    """
+
+    def __init__(self, d_model: int = 100, num_heads: int = 8, dropout: float = 0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+
+        # Cross-attention layers: primary attends to secondary
+        self.attn_p2s = nn.MultiheadAttention(
+            embed_dim=d_model, num_heads=num_heads, dropout=dropout, batch_first=True
+        )
+
+        # Cross-attention layers: secondary attends to primary
+        self.attn_s2p = nn.MultiheadAttention(
+            embed_dim=d_model, num_heads=num_heads, dropout=dropout, batch_first=True
+        )
+
+        # Layer normalization and residual connections
+        self.norm_primary = nn.LayerNorm(d_model)
+        self.norm_secondary = nn.LayerNorm(d_model)
+
+        # Optional feed-forward networks for additional processing
+        self.ffn_primary = nn.Sequential(
+            nn.Linear(d_model, d_model * 4),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 4, d_model),
+            nn.Dropout(dropout),
+        )
+
+        self.ffn_secondary = nn.Sequential(
+            nn.Linear(d_model, d_model * 4),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 4, d_model),
+            nn.Dropout(dropout),
+        )
+
+        self.norm_ffn_primary = nn.LayerNorm(d_model)
+        self.norm_ffn_secondary = nn.LayerNorm(d_model)
+
+    def forward(
+        self, primary: torch.Tensor, secondary: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
+        """
+        Forward pass with bidirectional cross-attention.
+
+        Args:
+            primary: Primary text features [B, d_model]
+            secondary: Secondary text features [B, d_model]
+
+        Returns:
+            Tuple of (enhanced_primary, enhanced_secondary, attention_weights)
+        """
+        batch_size = primary.size(0)
+
+        # Add sequence dimension for attention (treating each sample as a single token)
+        primary_seq = primary.unsqueeze(1)  # [B, 1, d_model]
+        secondary_seq = secondary.unsqueeze(1)  # [B, 1, d_model]
+
+        # Primary attends to Secondary
+        p_attended, p_attn_weights = self.attn_p2s(
+            query=primary_seq,  # What primary wants to know
+            key=secondary_seq,  # What secondary can provide
+            value=secondary_seq,  # The actual secondary information
+        )
+
+        # Residual connection and layer norm
+        primary_enhanced = self.norm_primary(primary + p_attended.squeeze(1))
+
+        # Secondary attends to Primary
+        s_attended, s_attn_weights = self.attn_s2p(
+            query=secondary_seq,  # What secondary wants to know
+            key=primary_seq,  # What primary can provide
+            value=primary_seq,  # The actual primary information
+        )
+
+        # Residual connection and layer norm
+        secondary_enhanced = self.norm_secondary(secondary + s_attended.squeeze(1))
+
+        # Optional feed-forward processing
+        primary_ffn = self.ffn_primary(primary_enhanced)
+        primary_final = self.norm_ffn_primary(primary_enhanced + primary_ffn)
+
+        secondary_ffn = self.ffn_secondary(secondary_enhanced)
+        secondary_final = self.norm_ffn_secondary(secondary_enhanced + secondary_ffn)
+
+        # Store attention weights for analysis/visualization
+        attention_weights = {
+            "primary_to_secondary": p_attn_weights.squeeze(
+                1
+            ),  # [B, num_heads, 1, 1] -> [B, num_heads]
+            "secondary_to_primary": s_attn_weights.squeeze(
+                1
+            ),  # [B, num_heads, 1, 1] -> [B, num_heads]
+        }
+
+        return primary_final, secondary_final, attention_weights
+
+
+class TrimodalCrossAttentionBert(pl.LightningModule):
+    """
+    Trimodal BERT with bidirectional cross-attention between text modalities.
+
+    This model processes three modalities:
+    1. Primary text (e.g., customer dialogue)
+    2. Secondary text (e.g., shipping events)
+    3. Tabular features (e.g., numerical risk factors)
+
+    The key enhancement is bidirectional cross-attention between the two text modalities,
+    allowing them to exchange information and create more informed representations.
+    """
+
+    def __init__(
+        self,
+        config: Dict[str, Union[int, float, str, bool, List[str], torch.FloatTensor]],
+    ):
+        super().__init__()
+        self.config = config
+        self.model_class = "trimodal_cross_attn_bert"
+
+        # === Core configuration ===
+        self.id_name = config.get("id_name", None)
+        self.label_name = config["label_name"]
+
+        # Primary text configuration (e.g., chat/dialogue)
+        self.primary_text_input_ids_key = config.get(
+            "primary_text_input_ids_key", "input_ids"
+        )
+        self.primary_text_attention_mask_key = config.get(
+            "primary_text_attention_mask_key", "attention_mask"
+        )
+        self.primary_text_name = (
+            config["primary_text_name"]
+            + "_processed_"
+            + self.primary_text_input_ids_key
+        )
+        self.primary_text_attention_mask = (
+            config["primary_text_name"]
+            + "_processed_"
+            + self.primary_text_attention_mask_key
+        )
+
+        # Secondary text configuration (e.g., shiptrack)
+        self.secondary_text_input_ids_key = config.get(
+            "secondary_text_input_ids_key", "input_ids"
+        )
+        self.secondary_text_attention_mask_key = config.get(
+            "secondary_text_attention_mask_key", "attention_mask"
+        )
+        self.secondary_text_name = (
+            config["secondary_text_name"]
+            + "_processed_"
+            + self.secondary_text_input_ids_key
+        )
+        self.secondary_text_attention_mask = (
+            config["secondary_text_name"]
+            + "_processed_"
+            + self.secondary_text_attention_mask_key
+        )
+
+        # Tabular configuration
+        self.tab_field_list = config.get("tab_field_list", None)
+
+        self.is_binary = config.get("is_binary", True)
+        self.task = "binary" if self.is_binary else "multiclass"
+        self.num_classes = 2 if self.is_binary else config.get("num_classes", 2)
+        self.metric_choices = config.get("metric_choices", ["accuracy", "f1_score"])
+
+        # ===== transformed label (multiclass case) =======
+        if not self.is_binary and self.num_classes > 2:
+            self.label_name_transformed = self.label_name + "_processed"
+        else:
+            self.label_name_transformed = self.label_name
+
+        self.model_path = config.get("model_path", "")
+        self.lr = config.get("lr", 2e-5)
+        self.weight_decay = config.get("weight_decay", 0.0)
+        self.adam_epsilon = config.get("adam_epsilon", 1e-8)
+        self.warmup_steps = config.get("warmup_steps", 0)
+        self.run_scheduler = config.get("run_scheduler", True)
+
+        # For storing predictions and evaluation info
+        self.id_lst, self.pred_lst, self.label_lst = [], [], []
+        self.test_output_folder = None
+        self.test_has_label = False
+
+        # === Sub-networks ===
+        # Tabular subnetwork
+        self.tab_subnetwork = TabAE(config) if self.tab_field_list else None
+        tab_dim = self.tab_subnetwork.output_tab_dim if self.tab_subnetwork else 0
+
+        # Primary text subnetwork (e.g., chat/dialogue)
+        primary_config = self._create_text_config(config, "primary")
+        self.primary_text_subnetwork = TextBertBase(primary_config)
+        primary_text_dim = self.primary_text_subnetwork.output_text_dim
+
+        # Secondary text subnetwork (e.g., shiptrack)
+        secondary_config = self._create_text_config(config, "secondary")
+        self.secondary_text_subnetwork = TextBertBase(secondary_config)
+        secondary_text_dim = self.secondary_text_subnetwork.output_text_dim
+
+        # === Cross-Attention Layer ===
+        # Ensure both text modalities have the same dimension for cross-attention
+        if primary_text_dim != secondary_text_dim:
+            logger.warning(
+                f"Primary text dim ({primary_text_dim}) != Secondary text dim ({secondary_text_dim}). "
+                f"Using projection layers to align dimensions."
+            )
+
+            # Use the larger dimension as target
+            target_dim = max(primary_text_dim, secondary_text_dim)
+
+            self.primary_projection = (
+                nn.Linear(primary_text_dim, target_dim)
+                if primary_text_dim != target_dim
+                else nn.Identity()
+            )
+            self.secondary_projection = (
+                nn.Linear(secondary_text_dim, target_dim)
+                if secondary_text_dim != target_dim
+                else nn.Identity()
+            )
+
+            cross_attn_dim = target_dim
+        else:
+            self.primary_projection = nn.Identity()
+            self.secondary_projection = nn.Identity()
+            cross_attn_dim = primary_text_dim
+
+        # Bidirectional cross-attention module
+        self.cross_attention = BidirectionalCrossAttention(
+            d_model=cross_attn_dim,
+            num_heads=config.get("cross_attention_heads", 8),
+            dropout=config.get("cross_attention_dropout", 0.1),
+        )
+
+        # === Final classifier with tri-modal fusion ===
+        # After cross-attention, we have enhanced representations of the same dimension
+        total_dim = (
+            cross_attn_dim * 2 + tab_dim
+        )  # Two enhanced text modalities + tabular
+        fusion_hidden_dim = config.get("fusion_hidden_dim", max(128, total_dim // 2))
+
+        self.final_merge_network = nn.Sequential(
+            nn.ReLU(),
+            nn.Dropout(config.get("fusion_dropout", 0.1)),
+            nn.Linear(total_dim, fusion_hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(config.get("fusion_dropout", 0.1)),
+            nn.Linear(fusion_hidden_dim, self.num_classes),
+        )
+
+        # === Loss function ===
+        weights = config.get("class_weights", [1.0] * self.num_classes)
+        # If weights are shorter than num_classes, pad with 1.0
+        if len(weights) != self.num_classes:
+            print(
+                f"[Warning] class_weights length ({len(weights)}) does not match num_classes ({self.num_classes}). Auto-padding with 1.0."
+            )
+            weights = weights + [1.0] * (self.num_classes - len(weights))
+
+        weights_tensor = torch.tensor(weights[: self.num_classes], dtype=torch.float)
+        self.register_buffer("class_weights_tensor", weights_tensor)
+        self.loss_op = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
+
+        # Store attention weights for logging/analysis
+        self.last_attention_weights = None
+
+        self.save_hyperparameters()
+
+    def _create_text_config(self, config: Dict, text_type: str) -> Dict:
+        """Create configuration for text subnetworks (primary or secondary)"""
+        if text_type == "primary":
+            text_name = config["primary_text_name"]
+            tokenizer = config.get(
+                "primary_tokenizer", config.get("tokenizer", "bert-base-cased")
+            )
+            hidden_dim = config.get(
+                "primary_hidden_common_dim", config["hidden_common_dim"]
+            )
+            input_ids_key = self.primary_text_input_ids_key
+            attention_mask_key = self.primary_text_attention_mask_key
+        elif text_type == "secondary":
+            text_name = config["secondary_text_name"]
+            tokenizer = config.get(
+                "secondary_tokenizer", config.get("tokenizer", "bert-base-cased")
+            )
+            hidden_dim = config.get(
+                "secondary_hidden_common_dim", config["hidden_common_dim"]
+            )
+            input_ids_key = self.secondary_text_input_ids_key
+            attention_mask_key = self.secondary_text_attention_mask_key
+        else:
+            raise ValueError(f"Unknown text_type: {text_type}")
+
+        return {
+            "text_name": text_name,
+            "label_name": config.get("label_name"),
+            "tokenizer": tokenizer,
+            "is_binary": config.get("is_binary", True),
+            "num_classes": config.get("num_classes", 2),
+            "metric_choices": config.get("metric_choices", ["accuracy", "f1_score"]),
+            "weight_decay": config.get("weight_decay", 0.0),
+            "warmup_steps": config.get("warmup_steps", 0),
+            "adam_epsilon": config.get("adam_epsilon", 1e-8),
+            "lr": config.get("lr", 2e-5),
+            "run_scheduler": config.get("run_scheduler", True),
+            "reinit_pooler": config.get(
+                f"{text_type}_reinit_pooler", config.get("reinit_pooler", False)
+            ),
+            "reinit_layers": config.get(
+                f"{text_type}_reinit_layers", config.get("reinit_layers", 0)
+            ),
+            "model_path": config.get("model_path"),
+            "hidden_common_dim": hidden_dim,
+            "text_input_ids_key": input_ids_key,
+            "text_attention_mask_key": attention_mask_key,
+        }
+
+    def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Forward pass with batch input.
+        Expects pre-tokenized inputs for both text modalities and tabular data as a dictionary.
+        """
+        tab_data = (
+            self.tab_subnetwork.combine_tab_data(batch) if self.tab_subnetwork else None
+        )
+        return self._forward_impl(batch, tab_data)
+
+    def training_step(self, batch, batch_idx):
+        loss, _, _ = self.run_epoch(batch, "train")
+        self.log("train_loss", loss, sync_dist=True, prog_bar=True)
+
+        # Log attention statistics if available
+        if self.last_attention_weights is not None:
+            # Log average attention weights for monitoring
+            p2s_attn = self.last_attention_weights["primary_to_secondary"].mean()
+            s2p_attn = self.last_attention_weights["secondary_to_primary"].mean()
+            self.log("attn_primary_to_secondary", p2s_attn, sync_dist=True)
+            self.log("attn_secondary_to_primary", s2p_attn, sync_dist=True)
+
+        return {"loss": loss}
+
+    def on_validation_epoch_start(self):
+        self.pred_lst.clear()
+        self.label_lst.clear()
+
+    def validation_step(self, batch, batch_idx):
+        loss, preds, labels = self.run_epoch(batch, "val")
+        self.log("val_loss", loss, sync_dist=True, prog_bar=True)
+        self.pred_lst.extend(preds.detach().cpu().tolist())
+        self.label_lst.extend(labels.detach().cpu().tolist())
+
+    def on_validation_epoch_end(self):
+        # Sync across GPUs
+        device = self.device
+        preds = torch.tensor(sum(all_gather(self.pred_lst), []))
+        labels = torch.tensor(sum(all_gather(self.label_lst), []))
+        metrics = compute_metrics(
+            preds.to(device),
+            labels.to(device),
+            self.metric_choices,
+            self.task,
+            self.num_classes,
+            "val",
+        )
+        self.log_dict(metrics, prog_bar=True)
+
+    def test_step(self, batch, batch_idx):
+        mode = "test" if self.label_name in batch else "pred"
+        self.test_has_label = mode == "test"
+
+        loss, preds, labels = self.run_epoch(batch, mode)
+        self.pred_lst.extend(preds.detach().cpu().tolist())
+        if labels is not None:
+            self.label_lst.extend(labels.detach().cpu().tolist())
+        self.log("test_loss", loss, sync_dist=True, prog_bar=True)
+        if self.id_name:
+            self.id_lst.extend(batch[self.id_name])
+
+    def on_test_epoch_start(self):
+        self.id_lst.clear()
+        self.pred_lst.clear()
+        self.label_lst.clear()
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        self.test_output_folder = (
+            Path(self.model_path) / f"{self.model_class}-{timestamp}"
+        )
+        self.test_output_folder.mkdir(parents=True, exist_ok=True)
+
+    def on_test_epoch_end(self):
+        import pandas as pd
+
+        # Save only local results per GPU
+        results = {}
+        if self.is_binary:
+            results["prob"] = self.pred_lst  # Keep "prob" for binary
+        else:
+            results["prob"] = [
+                json.dumps(p) for p in self.pred_lst
+            ]  # convert the [num_class] list into a string
+
+        if self.test_has_label:
+            results["label"] = self.label_lst
+        if self.id_name:
+            results[self.id_name] = self.id_lst
+
+        df = pd.DataFrame(results)
+        test_file = self.test_output_folder / f"test_result_rank{self.global_rank}.tsv"
+        df.to_csv(test_file, sep="\t", index=False)
+        print(f"[Rank {self.global_rank}] Saved test results to {test_file}")
+
+    def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        mode = "test" if self.label_name in batch else "pred"
+        _, preds, labels = self.run_epoch(batch, mode)
+        return (preds, labels) if mode == "test" else preds
+
+    def get_attention_weights(self) -> Dict:
+        """
+        Get the last computed attention weights for analysis/visualization.
+
+        Returns:
+            Dictionary containing attention weights from the last forward pass
+        """
+        return self.last_attention_weights
+
+    # === Export ===
+    def export_to_onnx(
+        self,
+        save_path: Union[str, Path],
+        sample_batch: Dict[str, Union[torch.Tensor, List]],
+    ):
+        class TrimodalCrossAttentionBertONNXWrapper(nn.Module):
+            def __init__(self, model: TrimodalCrossAttentionBert):
+                super().__init__()
+                self.model = model
+                self.primary_text_key = model.primary_text_name
+                self.primary_mask_key = model.primary_text_attention_mask
+                self.secondary_text_key = model.secondary_text_name
+                self.secondary_mask_key = model.secondary_text_attention_mask
+                self.tab_keys = model.tab_field_list or []
+
+            def forward(
+                self,
+                primary_input_ids: torch.Tensor,
+                primary_attention_mask: torch.Tensor,
+                secondary_input_ids: torch.Tensor,
+                secondary_attention_mask: torch.Tensor,
+                *tab_tensors: torch.Tensor,
+            ):
+                batch = {
+                    self.primary_text_key: primary_input_ids,
+                    self.primary_mask_key: primary_attention_mask,
+                    self.secondary_text_key: secondary_input_ids,
+                    self.secondary_mask_key: secondary_attention_mask,
+                }
+                for name, tensor in zip(self.tab_keys, tab_tensors):
+                    batch[name] = tensor
+                # output probability scores instead of logits
+                logits = self.model(batch)
+                return nn.functional.softmax(logits, dim=1)
+
+        self.eval()
+
+        # Unwrap from FSDP if needed
+        model_to_export = self.module if isinstance(self, FSDP) else self
+        model_to_export = model_to_export.to("cpu")
+        wrapper = (
+            TrimodalCrossAttentionBertONNXWrapper(model_to_export).to("cpu").eval()
+        )
+
+        # === Prepare input tensor list ===
+        input_names = [
+            self.primary_text_name,
+            self.primary_text_attention_mask,
+            self.secondary_text_name,
+            self.secondary_text_attention_mask,
+        ]
+        input_tensors = []
+
+        # Handle primary text inputs
+        primary_input_ids_tensor = sample_batch.get(self.primary_text_name)
+        primary_attention_mask_tensor = sample_batch.get(
+            self.primary_text_attention_mask
+        )
+
+        # Handle secondary text inputs
+        secondary_input_ids_tensor = sample_batch.get(self.secondary_text_name)
+        secondary_attention_mask_tensor = sample_batch.get(
+            self.secondary_text_attention_mask
+        )
+
+        if not all(
+            isinstance(t, torch.Tensor)
+            for t in [
+                primary_input_ids_tensor,
+                primary_attention_mask_tensor,
+                secondary_input_ids_tensor,
+                secondary_attention_mask_tensor,
+            ]
+        ):
+            raise ValueError(
+                "All text input tensors (primary and secondary input_ids and attention_mask) must be torch.Tensor in sample_batch."
+            )
+
+        # Convert to CPU
+        primary_input_ids_tensor = primary_input_ids_tensor.to("cpu")
+        primary_attention_mask_tensor = primary_attention_mask_tensor.to("cpu")
+        secondary_input_ids_tensor = secondary_input_ids_tensor.to("cpu")
+        secondary_attention_mask_tensor = secondary_attention_mask_tensor.to("cpu")
+
+        input_tensors.extend(
+            [
+                primary_input_ids_tensor,
+                primary_attention_mask_tensor,
+                secondary_input_ids_tensor,
+                secondary_attention_mask_tensor,
+            ]
+        )
+
+        batch_size = primary_input_ids_tensor.shape[0]
+
+        # Handle tabular inputs
+        if self.tab_field_list:
+            for field in self.tab_field_list:
+                input_names.append(field)
+                value = sample_batch.get(field)
+                if isinstance(value, torch.Tensor):
+                    value = value.to("cpu").float()
+                    if value.shape[0] != batch_size:
+                        raise ValueError(
+                            f"Tensor for field '{field}' has batch size {value.shape[0]} but expected {batch_size}"
+                        )
+                    input_tensors.append(value)
+                elif isinstance(value, list) and all(
+                    isinstance(x, (int, float)) for x in value
+                ):
+                    tensor_val = (
+                        torch.tensor(value, dtype=torch.float32)
+                        .view(batch_size, -1)
+                        .to("cpu")
+                    )
+                    input_tensors.append(tensor_val)
+                else:
+                    logger.warning(
+                        f"Field '{field}' has unsupported type ({type(value)}); replacing with zeros."
+                    )
+                    input_tensors.append(
+                        torch.zeros((batch_size, 1), dtype=torch.float32).to("cpu")
+                    )
+
+        # Final check
+        for name, tensor in zip(input_names, input_tensors):
+            assert tensor.shape[0] == batch_size, (
+                f"Inconsistent batch size for input '{name}': {tensor.shape}"
+            )
+
+        dynamic_axes = {}
+        for name, tensor in zip(input_names, input_tensors):
+            # Assume at least first dimension (batch) is dynamic
+            axes = {0: "batch"}
+            # Make all further dims dynamic as well
+            for i in range(1, tensor.dim()):
+                axes[i] = f"dim_{i}"
+            dynamic_axes[name] = axes
+
+        try:
+            torch.onnx.export(
+                wrapper,
+                tuple(input_tensors),
+                f=save_path,
+                input_names=input_names,
+                output_names=["probs"],
+                dynamic_axes=dynamic_axes,
+                opset_version=14,
+            )
+            onnx_model = onnx.load(str(save_path))
+            onnx.checker.check_model(onnx_model)
+            logger.info(f"ONNX model exported and verified at {save_path}")
+        except Exception as e:
+            logger.warning(f"ONNX export failed: {e}")
+
+    def export_to_torchscript(
+        self,
+        save_path: Union[str, Path],
+        sample_batch: Dict[str, Union[torch.Tensor, List]],
+    ):
+        self.eval()
+
+        # Clean the sample batch: remove list of strings, convert list of numbers to tensors
+        sample_batch_tensorized = {}
+        for k, v in sample_batch.items():
+            if isinstance(v, list):
+                if all(isinstance(x, str) for x in v):
+                    continue  # Skip string list (e.g., dialogue)
+                sample_batch_tensorized[k] = torch.tensor(v).to("cpu")
+            elif isinstance(v, torch.Tensor):
+                sample_batch_tensorized[k] = v.to("cpu")
+
+        # Unwrap from FSDP if needed
+        model_to_export = self
+        if isinstance(self, FSDP):
+            model_to_export = self.module  # Unwrap the actual LightningModule
+
+        model_to_export = model_to_export.to("cpu")
+        model_to_export.eval()
+
+        # Trace the forward method using the cleaned sample batch
+        try:
+            scripted_model = torch.jit.trace(
+                model_to_export, (sample_batch_tensorized,)
+            )
+        except Exception as e:
+            logger.warning(f"Trace failed: {e}. Trying script...")
+            scripted_model = torch.jit.script(model_to_export)
+        scripted_model.save(str(save_path))
+        logger.info(f"TorchScript model saved to: {save_path}")
+
+    def _forward_impl(self, batch, tab_data) -> torch.Tensor:
+        device = next(self.parameters()).device
+
+        # Process primary text
+        primary_batch = self._create_text_batch(batch, "primary")
+        primary_text_out = self.primary_text_subnetwork(
+            primary_batch
+        )  # [B, primary_dim]
+
+        # Process secondary text
+        secondary_batch = self._create_text_batch(batch, "secondary")
+        secondary_text_out = self.secondary_text_subnetwork(
+            secondary_batch
+        )  # [B, secondary_dim]
+
+        # Project to common dimension if needed
+        primary_projected = self.primary_projection(
+            primary_text_out
+        )  # [B, cross_attn_dim]
+        secondary_projected = self.secondary_projection(
+            secondary_text_out
+        )  # [B, cross_attn_dim]
+
+        # Apply bidirectional cross-attention
+        primary_enhanced, secondary_enhanced, attention_weights = self.cross_attention(
+            primary_projected, secondary_projected
+        )
+
+        # Store attention weights for potential logging/analysis
+        self.last_attention_weights = attention_weights
+
+        # Process tabular data
+        if tab_data is not None:
+            tab_data = tab_data.float()
+            tab_out = self.tab_subnetwork(tab_data)  # [B, tab_dim]
+        else:
+            tab_out = torch.zeros((primary_enhanced.size(0), 0), device=device)
+
+        # Tri-modal fusion: concatenate enhanced text modalities + tabular
+        combined = torch.cat([primary_enhanced, secondary_enhanced, tab_out], dim=1)
+        return self.final_merge_network(combined)
+
+    def _create_text_batch(self, batch: Dict, text_type: str) -> Dict:
+        """Create a batch dictionary for specific text subnetwork"""
+        if text_type == "primary":
+            text_name = self.primary_text_name
+            attention_mask_name = self.primary_text_attention_mask
+        elif text_type == "secondary":
+            text_name = self.secondary_text_name
+            attention_mask_name = self.secondary_text_attention_mask
+        else:
+            raise ValueError(f"Unknown text_type: {text_type}")
+
+        return {
+            text_name: batch[text_name],
+            attention_mask_name: batch[attention_mask_name],
+        }
+
+    def configure_optimizers(self):
+        """
+        Optimizer + LR scheduler (AdamW + linear warmup)
+        """
+        no_decay = ["bias", "LayerNorm.weight"]
+        params = [
+            {
+                "params": [
+                    p
+                    for n, p in self.named_parameters()
+                    if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": self.weight_decay,
+            },
+            {
+                "params": [
+                    p
+                    for n, p in self.named_parameters()
+                    if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+        optimizer = AdamW(params, lr=self.lr, eps=self.adam_epsilon)
+
+        scheduler = (
+            get_linear_schedule_with_warmup(
+                optimizer, self.warmup_steps, self.trainer.estimated_stepping_batches
+            )
+            if self.run_scheduler
+            else get_constant_schedule_with_warmup(
+                optimizer, num_warmup_steps=self.warmup_steps
+            )
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+        }
+
+    def run_epoch(self, batch, stage):
+        labels = batch.get(self.label_name_transformed) if stage != "pred" else None
+
+        if labels is not None:
+            if not isinstance(labels, torch.Tensor):
+                labels = torch.tensor(labels, device=self.device)
+
+            # Important: CrossEntropyLoss always expects LongTensor (class index)
+            if self.is_binary:
+                labels = labels.long()  # Binary: Expects LongTensor (class indices)
+            else:
+                # Multiclass: Check if labels are one-hot encoded
+                if labels.dim() > 1:  # Assuming one-hot is 2D
+                    labels = labels.argmax(dim=1).long()  # Convert one-hot to indices
+                else:
+                    labels = (
+                        labels.long()
+                    )  # Multiclass: Expects LongTensor (class indices)
+
+        tab_data = (
+            self.tab_subnetwork.combine_tab_data(batch) if self.tab_subnetwork else None
+        )
+
+        logits = self._forward_impl(batch, tab_data)
+        loss = self.loss_op(logits, labels) if stage != "pred" else None
+
+        preds = torch.softmax(logits, dim=1)
+        preds = preds[:, 1] if self.is_binary else preds
+        return loss, preds, labels

@@ -13,6 +13,7 @@ import onnx
 
 # =================== Logging Setup =================================
 import logging
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
@@ -159,7 +160,9 @@ class TextLSTM(pl.LightningModule):
         self.pred_lst.clear()
         self.label_lst.clear()
         timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        self.test_output_folder = Path(self.model_path) / f"{self.model_class}-{timestamp}"
+        self.test_output_folder = (
+            Path(self.model_path) / f"{self.model_class}-{timestamp}"
+        )
         self.test_output_folder.mkdir(parents=True, exist_ok=True)
 
     def test_step(self, batch, batch_idx):
@@ -191,9 +194,13 @@ class TextLSTM(pl.LightningModule):
         _, preds, labels = self.run_epoch(batch, mode)
         return (preds, labels) if mode == "test" else preds
 
-    def export_to_onnx(self, save_path: Union[str, Path], sample_batch: Dict[str, Union[torch.Tensor, List]]):
+    def export_to_onnx(
+        self,
+        save_path: Union[str, Path],
+        sample_batch: Dict[str, Union[torch.Tensor, List]],
+    ):
         class TextLSTMONNXWrapper(nn.Module):
-            def __init__(self, model: 'TextLSTM'):
+            def __init__(self, model: "TextLSTM"):
                 super().__init__()
                 self.model = model
                 self.text_key = model.text_name
@@ -204,13 +211,15 @@ class TextLSTM(pl.LightningModule):
                 return nn.functional.softmax(logits, dim=1)
 
         self.eval()
-        model_to_export = self.module if hasattr(self, 'module') else self
+        model_to_export = self.module if hasattr(self, "module") else self
         model_to_export = model_to_export.to("cpu")
         wrapper = TextLSTMONNXWrapper(model_to_export).to("cpu").eval()
 
         input_ids_tensor = sample_batch.get(self.text_name)
         if not isinstance(input_ids_tensor, torch.Tensor):
-            raise ValueError(f"Sample batch must provide {self.text_name} as a torch.Tensor.")
+            raise ValueError(
+                f"Sample batch must provide {self.text_name} as a torch.Tensor."
+            )
         input_ids_tensor = input_ids_tensor.to("cpu")
 
         input_names = [self.text_name]

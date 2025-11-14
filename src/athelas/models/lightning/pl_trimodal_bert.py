@@ -13,7 +13,6 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 import lightning.pytorch as pl
 
-
 from transformers import (
     get_linear_schedule_with_warmup,
     get_constant_schedule_with_warmup,
@@ -27,7 +26,7 @@ from .pl_model_plots import compute_metrics
 
 # =================== Logging Setup =================================
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)  # <-- THIS LINE IS MISSING
+logger.setLevel(logging.INFO)
 
 handler = logging.StreamHandler()
 handler.setLevel(logging.INFO)
@@ -37,27 +36,56 @@ logger.addHandler(handler)
 logger.propagate = False
 
 
-class MultimodalBert(pl.LightningModule):
+class TrimodalBert(pl.LightningModule):
     def __init__(
         self,
         config: Dict[str, Union[int, float, str, bool, List[str], torch.FloatTensor]],
     ):
         super().__init__()
         self.config = config
-        self.model_class = "multimodal_bert"
+        self.model_class = "trimodal_bert"
 
         # === Core configuration ===
         self.id_name = config.get("id_name", None)
         self.label_name = config["label_name"]
-        # Use configurable key names for text input
-        self.text_input_ids_key = config.get("text_input_ids_key", "input_ids")
-        self.text_attention_mask_key = config.get(
-            "text_attention_mask_key", "attention_mask"
+
+        # Primary text configuration (e.g., chat/dialogue)
+        self.primary_text_input_ids_key = config.get(
+            "primary_text_input_ids_key", "input_ids"
         )
-        self.text_name = config["text_name"] + "_processed_" + self.text_input_ids_key
-        self.text_attention_mask = (
-            config["text_name"] + "_processed_" + self.text_attention_mask_key
+        self.primary_text_attention_mask_key = config.get(
+            "primary_text_attention_mask_key", "attention_mask"
         )
+        self.primary_text_name = (
+            config["primary_text_name"]
+            + "_processed_"
+            + self.primary_text_input_ids_key
+        )
+        self.primary_text_attention_mask = (
+            config["primary_text_name"]
+            + "_processed_"
+            + self.primary_text_attention_mask_key
+        )
+
+        # Secondary text configuration (e.g., shiptrack)
+        self.secondary_text_input_ids_key = config.get(
+            "secondary_text_input_ids_key", "input_ids"
+        )
+        self.secondary_text_attention_mask_key = config.get(
+            "secondary_text_attention_mask_key", "attention_mask"
+        )
+        self.secondary_text_name = (
+            config["secondary_text_name"]
+            + "_processed_"
+            + self.secondary_text_input_ids_key
+        )
+        self.secondary_text_attention_mask = (
+            config["secondary_text_name"]
+            + "_processed_"
+            + self.secondary_text_attention_mask_key
+        )
+
+        # Tabular configuration
         self.tab_field_list = config.get("tab_field_list", None)
 
         self.is_binary = config.get("is_binary", True)
@@ -84,18 +112,31 @@ class MultimodalBert(pl.LightningModule):
         self.test_has_label = False
 
         # === Sub-networks ===
-        self.tab_subnetwork = (
-            TabAE(config) if self.tab_field_list else None
-        )  # Or TabularEmbeddingModule
+        # Tabular subnetwork
+        self.tab_subnetwork = TabAE(config) if self.tab_field_list else None
         tab_dim = self.tab_subnetwork.output_tab_dim if self.tab_subnetwork else 0
 
-        self.text_subnetwork = TextBertBase(config)
-        text_dim = self.text_subnetwork.output_text_dim
+        # Primary text subnetwork (e.g., chat/dialogue)
+        primary_config = self._create_text_config(config, "primary")
+        self.primary_text_subnetwork = TextBertBase(primary_config)
+        primary_text_dim = self.primary_text_subnetwork.output_text_dim
 
-        # === Final classifier ===
+        # Secondary text subnetwork (e.g., shiptrack)
+        secondary_config = self._create_text_config(config, "secondary")
+        self.secondary_text_subnetwork = TextBertBase(secondary_config)
+        secondary_text_dim = self.secondary_text_subnetwork.output_text_dim
+
+        # === Final classifier with tri-modal fusion ===
+        total_dim = primary_text_dim + secondary_text_dim + tab_dim
+        fusion_hidden_dim = config.get("fusion_hidden_dim", max(128, total_dim // 2))
+
         self.final_merge_network = nn.Sequential(
             nn.ReLU(),
-            nn.Linear(tab_dim + text_dim, self.num_classes),
+            nn.Dropout(config.get("fusion_dropout", 0.1)),
+            nn.Linear(total_dim, fusion_hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(config.get("fusion_dropout", 0.1)),
+            nn.Linear(fusion_hidden_dim, self.num_classes),
         )
 
         # === Loss function ===
@@ -113,10 +154,59 @@ class MultimodalBert(pl.LightningModule):
 
         self.save_hyperparameters()
 
+    def _create_text_config(self, config: Dict, text_type: str) -> Dict:
+        """Create configuration for text subnetworks (primary or secondary)"""
+        if text_type == "primary":
+            text_name = config["primary_text_name"]
+            tokenizer = config.get(
+                "primary_tokenizer", config.get("tokenizer", "bert-base-cased")
+            )
+            hidden_dim = config.get(
+                "primary_hidden_common_dim", config["hidden_common_dim"]
+            )
+            input_ids_key = self.primary_text_input_ids_key
+            attention_mask_key = self.primary_text_attention_mask_key
+        elif text_type == "secondary":
+            text_name = config["secondary_text_name"]
+            tokenizer = config.get(
+                "secondary_tokenizer", config.get("tokenizer", "bert-base-cased")
+            )
+            hidden_dim = config.get(
+                "secondary_hidden_common_dim", config["hidden_common_dim"]
+            )
+            input_ids_key = self.secondary_text_input_ids_key
+            attention_mask_key = self.secondary_text_attention_mask_key
+        else:
+            raise ValueError(f"Unknown text_type: {text_type}")
+
+        return {
+            "text_name": text_name,
+            "label_name": config.get("label_name"),
+            "tokenizer": tokenizer,
+            "is_binary": config.get("is_binary", True),
+            "num_classes": config.get("num_classes", 2),
+            "metric_choices": config.get("metric_choices", ["accuracy", "f1_score"]),
+            "weight_decay": config.get("weight_decay", 0.0),
+            "warmup_steps": config.get("warmup_steps", 0),
+            "adam_epsilon": config.get("adam_epsilon", 1e-8),
+            "lr": config.get("lr", 2e-5),
+            "run_scheduler": config.get("run_scheduler", True),
+            "reinit_pooler": config.get(
+                f"{text_type}_reinit_pooler", config.get("reinit_pooler", False)
+            ),
+            "reinit_layers": config.get(
+                f"{text_type}_reinit_layers", config.get("reinit_layers", 0)
+            ),
+            "model_path": config.get("model_path"),
+            "hidden_common_dim": hidden_dim,
+            "text_input_ids_key": input_ids_key,
+            "text_attention_mask_key": attention_mask_key,
+        }
+
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
         Forward pass with batch input.
-        Expects pre-tokenized inputs and tabular data as a dictionary.
+        Expects pre-tokenized inputs for both text modalities and tabular data as a dictionary.
         """
         tab_data = (
             self.tab_subnetwork.combine_tab_data(batch) if self.tab_subnetwork else None
@@ -125,17 +215,41 @@ class MultimodalBert(pl.LightningModule):
 
     def _forward_impl(self, batch, tab_data) -> torch.Tensor:
         device = next(self.parameters()).device
-        # Use configurable key names to access text data]
-        text_out = self.text_subnetwork(batch)
 
+        # Process primary text
+        primary_batch = self._create_text_batch(batch, "primary")
+        primary_text_out = self.primary_text_subnetwork(primary_batch)
+
+        # Process secondary text
+        secondary_batch = self._create_text_batch(batch, "secondary")
+        secondary_text_out = self.secondary_text_subnetwork(secondary_batch)
+
+        # Process tabular data
         if tab_data is not None:
-            tab_data = tab_data.float()  # Ensure tab_data is on the correct device
+            tab_data = tab_data.float()
             tab_out = self.tab_subnetwork(tab_data)  # [B, D]
         else:
-            tab_out = torch.zeros((text_out.size(0), 0), device=device)
+            tab_out = torch.zeros((primary_text_out.size(0), 0), device=device)
 
-        combined = torch.cat([text_out, tab_out], dim=1)
+        # Tri-modal fusion: concatenate all modalities
+        combined = torch.cat([primary_text_out, secondary_text_out, tab_out], dim=1)
         return self.final_merge_network(combined)
+
+    def _create_text_batch(self, batch: Dict, text_type: str) -> Dict:
+        """Create a batch dictionary for specific text subnetwork"""
+        if text_type == "primary":
+            text_name = self.primary_text_name
+            attention_mask_name = self.primary_text_attention_mask
+        elif text_type == "secondary":
+            text_name = self.secondary_text_name
+            attention_mask_name = self.secondary_text_attention_mask
+        else:
+            raise ValueError(f"Unknown text_type: {text_type}")
+
+        return {
+            text_name: batch[text_name],
+            attention_mask_name: batch[attention_mask_name],
+        }
 
     def configure_optimizers(self):
         """
@@ -177,7 +291,6 @@ class MultimodalBert(pl.LightningModule):
         }
 
     def run_epoch(self, batch, stage):
-        # labels = batch.get(self.label_name) if stage != "pred" else None
         labels = batch.get(self.label_name_transformed) if stage != "pred" else None
 
         if labels is not None:
@@ -271,7 +384,6 @@ class MultimodalBert(pl.LightningModule):
                 json.dumps(p) for p in self.pred_lst
             ]  # convert the [num_class] list into a string
 
-        # results = {"prob": self.pred_lst}
         if self.test_has_label:
             results["label"] = self.label_lst
         if self.id_name:
@@ -293,23 +405,29 @@ class MultimodalBert(pl.LightningModule):
         save_path: Union[str, Path],
         sample_batch: Dict[str, Union[torch.Tensor, List]],
     ):
-        class MultimodalBertONNXWrapper(nn.Module):
-            def __init__(self, model: MultimodalBert):
+        class TrimodalBertONNXWrapper(nn.Module):
+            def __init__(self, model: TrimodalBert):
                 super().__init__()
                 self.model = model
-                self.text_key = model.text_name
-                self.mask_key = model.text_attention_mask
+                self.primary_text_key = model.primary_text_name
+                self.primary_mask_key = model.primary_text_attention_mask
+                self.secondary_text_key = model.secondary_text_name
+                self.secondary_mask_key = model.secondary_text_attention_mask
                 self.tab_keys = model.tab_field_list or []
 
             def forward(
                 self,
-                input_ids: torch.Tensor,
-                attention_mask: torch.Tensor,
+                primary_input_ids: torch.Tensor,
+                primary_attention_mask: torch.Tensor,
+                secondary_input_ids: torch.Tensor,
+                secondary_attention_mask: torch.Tensor,
                 *tab_tensors: torch.Tensor,
             ):
                 batch = {
-                    self.text_key: input_ids,
-                    self.mask_key: attention_mask,
+                    self.primary_text_key: primary_input_ids,
+                    self.primary_mask_key: primary_attention_mask,
+                    self.secondary_text_key: secondary_input_ids,
+                    self.secondary_mask_key: secondary_attention_mask,
                 }
                 for name, tensor in zip(self.tab_keys, tab_tensors):
                     batch[name] = tensor
@@ -322,30 +440,58 @@ class MultimodalBert(pl.LightningModule):
         # Unwrap from FSDP if needed
         model_to_export = self.module if isinstance(self, FSDP) else self
         model_to_export = model_to_export.to("cpu")
-        wrapper = MultimodalBertONNXWrapper(model_to_export).to("cpu").eval()
+        wrapper = TrimodalBertONNXWrapper(model_to_export).to("cpu").eval()
 
         # === Prepare input tensor list ===
-        input_names = [self.text_name, self.text_attention_mask]
+        input_names = [
+            self.primary_text_name,
+            self.primary_text_attention_mask,
+            self.secondary_text_name,
+            self.secondary_text_attention_mask,
+        ]
         input_tensors = []
 
-        # Handle text inputs
-        input_ids_tensor = sample_batch.get(self.text_name)
-        attention_mask_tensor = sample_batch.get(self.text_attention_mask)
+        # Handle primary text inputs
+        primary_input_ids_tensor = sample_batch.get(self.primary_text_name)
+        primary_attention_mask_tensor = sample_batch.get(
+            self.primary_text_attention_mask
+        )
 
-        if not isinstance(input_ids_tensor, torch.Tensor) or not isinstance(
-            attention_mask_tensor, torch.Tensor
+        # Handle secondary text inputs
+        secondary_input_ids_tensor = sample_batch.get(self.secondary_text_name)
+        secondary_attention_mask_tensor = sample_batch.get(
+            self.secondary_text_attention_mask
+        )
+
+        if not all(
+            isinstance(t, torch.Tensor)
+            for t in [
+                primary_input_ids_tensor,
+                primary_attention_mask_tensor,
+                secondary_input_ids_tensor,
+                secondary_attention_mask_tensor,
+            ]
         ):
             raise ValueError(
-                "Both input_ids and attention_mask must be torch.Tensor in sample_batch."
+                "All text input tensors (primary and secondary input_ids and attention_mask) must be torch.Tensor in sample_batch."
             )
 
-        input_ids_tensor = input_ids_tensor.to("cpu")
-        attention_mask_tensor = attention_mask_tensor.to("cpu")
+        # Convert to CPU
+        primary_input_ids_tensor = primary_input_ids_tensor.to("cpu")
+        primary_attention_mask_tensor = primary_attention_mask_tensor.to("cpu")
+        secondary_input_ids_tensor = secondary_input_ids_tensor.to("cpu")
+        secondary_attention_mask_tensor = secondary_attention_mask_tensor.to("cpu")
 
-        input_tensors.append(input_ids_tensor)
-        input_tensors.append(attention_mask_tensor)
+        input_tensors.extend(
+            [
+                primary_input_ids_tensor,
+                primary_attention_mask_tensor,
+                secondary_input_ids_tensor,
+                secondary_attention_mask_tensor,
+            ]
+        )
 
-        batch_size = input_ids_tensor.shape[0]
+        batch_size = primary_input_ids_tensor.shape[0]
 
         # Handle tabular inputs
         if self.tab_field_list:

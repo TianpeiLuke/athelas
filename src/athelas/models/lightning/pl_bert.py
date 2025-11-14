@@ -16,7 +16,9 @@ from transformers import (
     get_constant_schedule_with_warmup,
 )
 from torch.optim import AdamW  # Added AdamW
-from lightning.pytorch.callbacks.early_stopping import EarlyStopping  # Added EarlyStopping
+from lightning.pytorch.callbacks.early_stopping import (
+    EarlyStopping,
+)  # Added EarlyStopping
 from lightning.pytorch.callbacks import ModelCheckpoint  # Added ModelCheckpoint
 
 from .dist_utils import all_gather  # Added all_gather
@@ -44,7 +46,9 @@ class TextBertBaseConfig(BaseModel):
 
     @field_validator("num_classes")  # Changed to field_validator
     @classmethod
-    def validate_num_classes(cls, value: int, info: ValidationInfo) -> int:  # Added type hints
+    def validate_num_classes(
+        cls, value: int, info: ValidationInfo
+    ) -> int:  # Added type hints
         if info.data.get("is_binary") and value != 2:
             raise ValueError("For binary classification, num_classes must be 2")
         if not info.data.get("is_binary") and value < 2:
@@ -61,8 +65,12 @@ class TextBertBase(pl.LightningModule):
 
         self.text_input_ids_key = self.config["text_input_ids_key"]
         self.text_attention_mask_key = self.config["text_attention_mask_key"]
-        self.text_name = self.config["text_name"] + "_processed_" + self.text_input_ids_key
-        self.text_attention_mask = self.config["text_name"] + "_processed_" + self.text_attention_mask_key
+        self.text_name = (
+            self.config["text_name"] + "_processed_" + self.text_input_ids_key
+        )
+        self.text_attention_mask = (
+            self.config["text_name"] + "_processed_" + self.text_attention_mask_key
+        )
 
         self.bert = AutoModel.from_pretrained(
             self.config["tokenizer"], output_attentions=False
