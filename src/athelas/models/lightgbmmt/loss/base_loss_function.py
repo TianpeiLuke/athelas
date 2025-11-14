@@ -12,7 +12,7 @@ from scipy.special import expit
 from sklearn.metrics import roc_auc_score
 
 if TYPE_CHECKING:
-    from ...hyperparams.hyperparameters_lightgbmmt import (
+    from ..hyperparams.hyperparameters_lightgbmmt import (
         LightGBMMtModelHyperparameters,
     )
 

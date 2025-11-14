@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 if TYPE_CHECKING:
-    from ...hyperparams.hyperparameters_lightgbmmt import LightGBMMtModelHyperparameters
+    from ..hyperparams.hyperparameters_lightgbmmt import LightGBMMtModelHyperparameters
     from ..loss.base_loss_function import BaseLossFunction
 
 from .training_state import TrainingState
