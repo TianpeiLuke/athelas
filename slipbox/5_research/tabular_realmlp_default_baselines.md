@@ -20,6 +20,10 @@ date of note: 2025-11-13
 
 # Paper – RealMLP: Better by Default for Tabular Data
 
+## Related notes
+- [[tabular_dl_vs_gbdt_production_strategy]] - Analysis of when to use RealMLP vs GBDTs in production
+- [[tabular_dl_models_index]] - Entry point for all tabular deep learning models
+
 ## Core idea
 
 RealMLP is a slightly refined MLP architecture whose **hyperparameters are meta-tuned once** over many datasets to provide strong **default settings**.  

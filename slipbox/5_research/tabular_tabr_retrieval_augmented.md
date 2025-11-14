@@ -20,6 +20,10 @@ date of note: 2025-11-13
 
 # Paper – TabR: Retrieval-Augmented Deep Learning for Tabular Data
 
+## Related notes
+- [[tabular_dl_vs_gbdt_production_strategy]] - Analysis of when to use TabR vs GBDTs in production
+- [[tabular_dl_models_index]] - Entry point for all tabular deep learning models
+
 ## Core idea
 
 TabR combines a **feed-forward neural network** with a **learned kNN-style retrieval mechanism**.  

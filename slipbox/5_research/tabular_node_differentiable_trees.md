@@ -20,6 +20,10 @@ date of note: 2025-11-13
 
 # Paper – NODE: Neural Oblivious Decision Ensembles for Tabular Data
 
+## Related notes
+- [[tabular_dl_vs_gbdt_production_strategy]] - Analysis of when to use NODE vs GBDTs in production
+- [[tabular_dl_models_index]] - Entry point for all tabular deep learning models
+
 ## Core idea
 
 NODE generalizes **ensembles of oblivious decision trees** into a fully differentiable deep architecture.  

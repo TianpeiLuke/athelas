@@ -21,6 +21,10 @@ date of note: 2025-11-13
 
 # Paper – TabPFN: Tabular Prior-Data Fitted Networks
 
+## Related notes
+- [[tabular_dl_vs_gbdt_production_strategy]] - Analysis of when to use TabPFN vs GBDTs in production
+- [[tabular_dl_models_index]] - Entry point for all tabular deep learning models
+
 ## Core idea
 
 TabPFN treats **tabular supervised learning as in-context Bayesian inference** implemented by a pretrained Transformer.  

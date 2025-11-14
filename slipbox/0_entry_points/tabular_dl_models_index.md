@@ -27,36 +27,33 @@ It links to short Zettelkasten-style notes for each model and to a higher-level 
 
 ## Paper notes (one model per card)
 
-- [[Paper – TabPFN: Tabular Prior-Data Fitted Networks]]  
+- [[tabular_tabpfn_foundation_model]]  
   Foundation model for small–medium tabular tasks, using in-context Bayesian-style inference and outperforming GBDTs on many small datasets.
 
-- [[Paper – FT-Transformer: Feature Tokenizer + Transformer for Tabular Data]]  
+- [[tabular_ft_transformer_architecture]]  
   General-purpose Transformer baseline for tabular data; strong and universal deep baseline, competitive with GBDTs across many benchmarks.
 
-- [[Paper – SAINT: Improved Neural Networks for Tabular Data via Row Attention and Contrastive Pre-Training]]  
+- [[tabular_saint_row_column_attention]]  
   Row+column attention transformer with contrastive self-supervised pretraining; on their benchmarks, outperforms XGBoost/CatBoost/LightGBM on average.
 
-- [[Paper – TabR: Retrieval-Augmented Deep Learning for Tabular Data]]  
+- [[tabular_tabr_retrieval_augmented]]  
   Retrieval-augmented MLP with kNN-style attention over neighbors; state-of-the-art average performance on several tabular benchmarks and strong under temporal drift.
 
-- [[Paper – TabNet: Attentive Interpretable Tabular Learning]]  
+- [[tabular_tabnet_attentive_selection]]  
   Sequential attention model that selects sparse feature subsets per decision step; interpretable feature usage with competitive performance on many benchmarks.
 
-- [[Paper – Simple Neural Nets Can Excel on Tabular Data (Regularization Is All You Need)]]  
-  Shows that heavily regularized, well-tuned MLPs can match or outperform GBDTs, emphasizing the importance of strong baselines and hyperparameter search.
-
-- [[Paper – RealMLP: Better by Default for Tabular Data]]  
+- [[tabular_realmlp_default_baselines]]  
   Meta-tuned MLP architecture providing strong default performance on medium-to-large tabular datasets and pairing well with GBDTs in ensembles.
 
-- [[Paper – NODE: Neural Oblivious Decision Ensembles for Tabular Data]]  
+- [[tabular_node_differentiable_trees]]  
   Differentiable generalization of oblivious decision trees that can outperform leading GBDT packages on many tabular tasks.
 
-- [[Paper – IMN: Interpretable Mesomorphic Networks for Tabular Data]]  
+- [[tabular_imn_interpretable_hypernetworks]]  
   Hypernetwork-based model that generates per-instance linear models, aiming for near-SOTA performance with native, instance-level interpretability.
 
 ## Synthesis / analysis
 
-- [[Analysis – Deep Tabular Models vs GBDTs and Production Strategy]]  
+- [[tabular_dl_vs_gbdt_production_strategy]]  
   Discusses:
   - When deep tabular models actually beat GBDTs (dataset regimes, regularity, drift, unlabeled data).
   - When GBDTs still dominate in practice.

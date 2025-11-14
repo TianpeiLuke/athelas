@@ -20,6 +20,10 @@ date of note: 2025-11-13
 
 # Paper – TabNet: Attentive Interpretable Tabular Learning
 
+## Related notes
+- [[tabular_dl_vs_gbdt_production_strategy]] - Analysis of when to use TabNet vs GBDTs in production
+- [[tabular_dl_models_index]] - Entry point for all tabular deep learning models
+
 ## Core idea
 
 TabNet is a **sequential attention architecture** that performs **sparse, step-wise feature selection**.  

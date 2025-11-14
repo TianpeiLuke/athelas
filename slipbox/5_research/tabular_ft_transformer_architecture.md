@@ -20,6 +20,10 @@ date of note: 2025-11-13
 
 # Paper – FT-Transformer: Feature Tokenizer + Transformer for Tabular Data
 
+## Related notes
+- [[tabular_dl_vs_gbdt_production_strategy]] - Analysis of when to use FT-Transformer vs GBDTs in production
+- [[tabular_dl_models_index]] - Entry point for all tabular deep learning models
+
 ## Core idea
 
 FT-Transformer is a **simple but strong adaptation of the Transformer** to tabular data.  

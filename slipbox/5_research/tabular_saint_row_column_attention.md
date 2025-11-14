@@ -20,6 +20,10 @@ date of note: 2025-11-13
 
 # Paper – SAINT: Improved Neural Networks for Tabular Data via Row Attention and Contrastive Pre-Training
 
+## Related notes
+- [[tabular_dl_vs_gbdt_production_strategy]] - Analysis of when to use SAINT vs GBDTs in production
+- [[tabular_dl_models_index]] - Entry point for all tabular deep learning models
+
 ## Core idea
 
 SAINT is a **hybrid transformer** for tabular data that applies attention over **rows and columns**, plus **contrastive self-supervised pretraining**.  
