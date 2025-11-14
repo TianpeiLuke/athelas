@@ -30,7 +30,7 @@ import lightning.pytorch as pl
 
 import onnx
 
-from .dist_utils import all_gather, get_rank
+from ..utils.dist_utils import all_gather, get_rank
 from .pl_tsa_metrics import compute_tsa_metrics
 from .pl_tsa_losses import FocalLoss, CyclicalFocalLoss
 from .pl_sequential_attention import SequentialAttentionModule
