@@ -30,19 +30,7 @@ from torch.distributed.fsdp.api import FullStateDictConfig, StateDictType
 import onnx
 import onnxruntime as ort
 
-
-from ..bimodal.pl_bimodal_cnn import BimodalCNN
-from ..text.pl_bert_classification import TextBertClassification
-from ..text.pl_bert import TextBertBase
-from ..tabular.pl_tab_ae import TabAE
-from ..text.pl_lstm import TextLSTM
-from ..bimodal.pl_bimodal_bert import BimodalBert
-from ..bimodal.pl_bimodal_gate_fusion import BimodalBertGateFusion
-from ..bimodal.pl_bimodal_moe import BimodalBertMoE
-from ..bimodal.pl_bimodal_cross_attn import BimodalBertCrossAttn
-from ..trimodal.pl_trimodal_bert import TrimodalBert
-from ..trimodal.pl_trimodal_cross_attn import TrimodalCrossAttentionBert
-from ..trimodal.pl_trimodal_gate_fusion import TrimodalGateFusionBert
+# Note: Model imports moved inside functions to avoid circular dependencies
 
 
 def setup_logger():
@@ -82,6 +70,10 @@ def my_auto_wrap_policy(
     Returns:
         bool: Whether to wrap this module
     """
+    # Lazy import to avoid circular dependency
+    from ..text.pl_bert import TextBertBase
+    from ..tabular.pl_tab_ae import TabAE
+
     return (
         isinstance(module, (TextBertBase, TabAE, nn.Linear, nn.Embedding, nn.Conv2d))
         and unwrapped_params >= min_num_params
@@ -408,18 +400,38 @@ def load_model(
     Returns:
         torch.nn.Module: Model with loaded weights.
     """
+    # Lazy imports to avoid circular dependencies
+    from ..bimodal.pl_bimodal_cnn import BimodalCNN
+    from ..text.pl_bert_classification import TextBertClassification
+    from ..text.pl_lstm import TextLSTM
+    from ..bimodal.pl_bimodal_bert import BimodalBert
+    from ..bimodal.pl_bimodal_gate_fusion import BimodalBertGateFusion
+    from ..bimodal.pl_bimodal_moe import BimodalBertMoE
+    from ..bimodal.pl_bimodal_cross_attn import BimodalBertCrossAttn
+    from ..trimodal.pl_trimodal_bert import TrimodalBert
+    from ..trimodal.pl_trimodal_cross_attn import TrimodalCrossAttentionBert
+    from ..trimodal.pl_trimodal_gate_fusion import TrimodalGateFusionBert
+
     logger.info("Instantiating model.")
     model = {
+        # Bimodal models
+        "bimodal": lambda: BimodalBert(config),  # Default bimodal
         "bimodal_cnn": lambda: BimodalCNN(
             config, embedding_mat.shape[0], embedding_mat
         ),
-        "bert": lambda: TextBertClassification(config),
-        "lstm": lambda: TextLSTM(config, embedding_mat.shape[0], embedding_mat),
         "bimodal_bert": lambda: BimodalBert(config),
         "bimodal_gate_fusion": lambda: BimodalBertGateFusion(config),
         "bimodal_moe": lambda: BimodalBertMoE(config),
         "bimodal_cross_attn": lambda: BimodalBertCrossAttn(config),
-        # Backward compatibility
+        # Trimodal models
+        "trimodal": lambda: TrimodalBert(config),  # Default trimodal
+        "trimodal_bert": lambda: TrimodalBert(config),
+        "trimodal_cross_attn_bert": lambda: TrimodalCrossAttentionBert(config),
+        "trimodal_gate_fusion_bert": lambda: TrimodalGateFusionBert(config),
+        # Text-only models
+        "bert": lambda: TextBertClassification(config),
+        "lstm": lambda: TextLSTM(config, embedding_mat.shape[0], embedding_mat),
+        # Backward compatibility (multimodal -> bimodal)
         "multimodal_cnn": lambda: BimodalCNN(
             config, embedding_mat.shape[0], embedding_mat
         ),
@@ -427,9 +439,6 @@ def load_model(
         "multimodal_gate_fusion": lambda: BimodalBertGateFusion(config),
         "multimodal_moe": lambda: BimodalBertMoE(config),
         "multimodal_cross_attn": lambda: BimodalBertCrossAttn(config),
-        "trimodal_bert": lambda: TrimodalBert(config),
-        "trimodal_cross_attn_bert": lambda: TrimodalCrossAttentionBert(config),
-        "trimodal_gate_fusion_bert": lambda: TrimodalGateFusionBert(config),
     }.get(model_class, lambda: BimodalBert(config))()
 
     try:
@@ -446,6 +455,15 @@ def load_model(
 def load_checkpoint(
     filename: str, model_class: str = "bimodal_bert", device_l: str = "cpu"
 ) -> nn.Module:
+    # Lazy imports to avoid circular dependencies
+    from ..bimodal.pl_bimodal_cnn import BimodalCNN
+    from ..text.pl_bert_classification import TextBertClassification
+    from ..text.pl_lstm import TextLSTM
+    from ..bimodal.pl_bimodal_bert import BimodalBert
+    from ..bimodal.pl_bimodal_gate_fusion import BimodalBertGateFusion
+    from ..bimodal.pl_bimodal_moe import BimodalBertMoE
+    from ..bimodal.pl_bimodal_cross_attn import BimodalBertCrossAttn
+
     logger.info("Loading checkpoint.")
     model_fn = {
         "bimodal_cnn": BimodalCNN,

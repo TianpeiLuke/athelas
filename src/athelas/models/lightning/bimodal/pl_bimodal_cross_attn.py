@@ -23,6 +23,7 @@ from ..utils.dist_utils import all_gather, get_rank
 from ..tabular.pl_tab_ae import TabAE
 from ..text.pl_bert import TextBertBase
 from ..utils.pl_model_plots import compute_metrics
+from ..utils.config_constants import filter_config_for_tensorboard
 
 # ============ Logging Setup ============
 logger = logging.getLogger(__name__)
@@ -69,13 +70,14 @@ class BimodalBertCrossAttn(pl.LightningModule):
         # — Core config —
         self.id_name = config.get("id_name")
         self.label_name = config["label_name"]
+        # Use unified naming: field_name + "_" + key (no "_processed_" suffix)
         self.text_input_ids_key = config.get("text_input_ids_key", "input_ids")
         self.text_attention_mask_key = config.get(
             "text_attention_mask_key", "attention_mask"
         )
-        self.text_name = config["text_name"] + "_processed_" + self.text_input_ids_key
+        self.text_name = config["text_name"] + "_" + self.text_input_ids_key
         self.text_attention_mask = (
-            config["text_name"] + "_processed_" + self.text_attention_mask_key
+            config["text_name"] + "_" + self.text_attention_mask_key
         )
         self.tab_field_list = config.get("tab_field_list", [])
 
@@ -135,7 +137,10 @@ class BimodalBertCrossAttn(pl.LightningModule):
         self.register_buffer("class_weights_tensor", wt)
         self.loss_op = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
 
-        self.save_hyperparameters()
+        # Filter config to only save essential hyperparameters to TensorBoard
+        # Excludes runtime artifacts (risk_tables, imputation_dict, etc.)
+        filtered_config = filter_config_for_tensorboard(config)
+        self.save_hyperparameters(filtered_config)
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         tab_data = (

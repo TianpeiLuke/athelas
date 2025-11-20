@@ -15,6 +15,7 @@ from ..tabular.pl_tab_ae import TabAE
 from ..text.pl_text_cnn import TextCNN
 from ..utils.dist_utils import all_gather
 from ..utils.pl_model_plots import compute_metrics
+from ..utils.config_constants import filter_config_for_tensorboard
 
 
 class BimodalCNN(pl.LightningModule):
@@ -31,8 +32,9 @@ class BimodalCNN(pl.LightningModule):
         # === Core configuration ===
         self.id_name = config.get("id_name", None)
         self.label_name = config["label_name"]
+        # Use unified naming: field_name + "_" + key (no "_processed_" suffix)
         self.text_input_ids_key = config.get("text_input_ids_key", "input_ids")
-        self.text_name = config["text_name"] + "_processed_" + self.text_input_ids_key
+        self.text_name = config["text_name"] + "_" + self.text_input_ids_key
         self.tab_field_list = config.get("tab_field_list", None)
 
         self.is_binary = config.get("is_binary", True)
@@ -74,7 +76,10 @@ class BimodalCNN(pl.LightningModule):
         )
         self.loss_op = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
 
-        self.save_hyperparameters()
+        # Filter config to only save essential hyperparameters to TensorBoard
+        # Excludes runtime artifacts (risk_tables, imputation_dict, etc.)
+        filtered_config = filter_config_for_tensorboard(config)
+        self.save_hyperparameters(filtered_config)
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         tab_data = (

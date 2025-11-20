@@ -11,12 +11,8 @@ from .dictionary_encoding_processor import DictionaryEncodingProcessor
 from .categorical_imputation_processor import CategoricalImputationProcessor
 from .numerical_categorical_processor import NumericalCategoricalProcessor
 from .categorical_validation_processor import CategoricalValidationProcessor
+from .risk_table_processor import RiskTableMappingProcessor
 
-# Import with optional dependency handling
-try:
-    from .risk_table_processor import RiskTableProcessor
-except ImportError:
-    RiskTableProcessor = None
 
 __all__ = [
     "CategoricalLabelProcessor",
@@ -25,8 +21,5 @@ __all__ = [
     "CategoricalImputationProcessor",
     "NumericalCategoricalProcessor",
     "CategoricalValidationProcessor",
+    "RiskTableMappingProcessor",
 ]
-
-# Add optional processors to __all__ if they're available
-if RiskTableProcessor is not None:
-    __all__.append("RiskTableProcessor")

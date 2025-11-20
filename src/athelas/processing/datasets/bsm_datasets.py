@@ -175,25 +175,17 @@ class BSMDataset(Dataset):
     def __getitem__(self, idx):
         """
         Fetch one row and apply processing pipelines (if defined).
+        Processed data overwrites the original field value.
         """
         if torch.is_tensor(idx):
             idx = idx.tolist()
         row = self.DataReader.iloc[idx].to_dict()
 
         # Apply all processors for each relevant field
+        # Processed data overwrites original in-place (no suffix, no deletion)
         for field_name, pipeline in self.processor_pipelines.items():
             if field_name in row:
-                processed_result = pipeline(row[field_name])
-                row[field_name + "_processed"] = processed_result
-
-            # Delete the original text field *after* processing
-            if self.text_name and self.text_name == field_name:
-                try:
-                    del row[field_name]
-                except KeyError:
-                    self.logger.warning(
-                        f"Text field '{field_name}' not found in row. Skipping deletion."
-                    )
+                row[field_name] = pipeline(row[field_name])
 
         return row
 
