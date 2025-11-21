@@ -65,11 +65,9 @@ class TextBertBase(pl.LightningModule):
 
         self.text_input_ids_key = self.config["text_input_ids_key"]
         self.text_attention_mask_key = self.config["text_attention_mask_key"]
-        self.text_name = (
-            self.config["text_name"] + "_processed_" + self.text_input_ids_key
-        )
+        self.text_name = self.config["text_name"] + "_" + self.text_input_ids_key
         self.text_attention_mask = (
-            self.config["text_name"] + "_processed_" + self.text_attention_mask_key
+            self.config["text_name"] + "_" + self.text_attention_mask_key
         )
 
         self.bert = AutoModel.from_pretrained(

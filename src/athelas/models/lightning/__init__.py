@@ -4,7 +4,7 @@ This package contains PyTorch Lightning model implementations organized into
 subdirectories by modality type:
 - text: Text-only models (BERT, LSTM, CNN)
 - bimodal: 2-modality fusion models (text + tabular)
-- trimodal: 3-modality fusion models  
+- trimodal: 3-modality fusion models
 - tabular: Tabular-only models
 - utils: Shared utilities and training infrastructure
 

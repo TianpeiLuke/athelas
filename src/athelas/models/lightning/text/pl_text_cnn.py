@@ -30,7 +30,7 @@ class TextCNN(pl.LightningModule):
         self.id_name = config.get("id_name", None)
         self.label_name = config["label_name"]
         self.text_input_ids_key = config.get("text_input_ids_key", "input_ids")
-        self.text_name = config["text_name"] + "_processed_" + self.text_input_ids_key
+        self.text_name = config["text_name"] + "_" + self.text_input_ids_key
 
         self.is_binary = config.get("is_binary", True)
         self.task = "binary" if self.is_binary else "multiclass"
