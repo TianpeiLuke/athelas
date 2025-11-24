@@ -236,6 +236,12 @@ class TrimodalCrossAttentionBert(pl.LightningModule):
         self.secondary_text_subnetwork = TextBertBase(secondary_config)
         secondary_text_dim = self.secondary_text_subnetwork.output_text_dim
 
+        # === Enable gradient checkpointing if configured ===
+        if config.get("use_gradient_checkpointing", False):
+            logger.info("Enabling gradient checkpointing for memory optimization")
+            self.primary_text_subnetwork.bert.gradient_checkpointing_enable()
+            self.secondary_text_subnetwork.bert.gradient_checkpointing_enable()
+
         # === Cross-Attention Layer ===
         # Ensure both text modalities have the same dimension for cross-attention
         if primary_text_dim != secondary_text_dim:

@@ -110,6 +110,11 @@ class BimodalBertCrossAttn(pl.LightningModule):
         self.text_subnetwork = TextBertBase(config)
         text_dim = self.text_subnetwork.output_text_dim
 
+        # === Enable gradient checkpointing if configured ===
+        if config.get("use_gradient_checkpointing", False):
+            logger.info("Enabling gradient checkpointing for memory optimization")
+            self.text_subnetwork.bert.gradient_checkpointing_enable()
+
         # — Cross-attention fusion —
         hidden_dim = config["hidden_common_dim"]
         num_heads = config.get("num_heads", 4)

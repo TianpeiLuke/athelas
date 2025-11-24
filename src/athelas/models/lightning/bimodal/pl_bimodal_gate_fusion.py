@@ -116,6 +116,11 @@ class BimodalBertGateFusion(pl.LightningModule):
         self.text_subnetwork = TextBertBase(config)
         text_dim = self.text_subnetwork.output_text_dim
 
+        # === Enable gradient checkpointing if configured ===
+        if config.get("use_gradient_checkpointing", False):
+            logger.info("Enabling gradient checkpointing for memory optimization")
+            self.text_subnetwork.bert.gradient_checkpointing_enable()
+
         # === Gated-fusion head ===
         # Project each branch into the same fusion space
         fusion_dim = config.get("fusion_dim", text_dim)

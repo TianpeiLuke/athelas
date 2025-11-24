@@ -104,7 +104,17 @@ class DialogueChunkerProcessor(Processor):
 
         for msg in messages:
             # Count tokens using the HF AutoTokenizer; avoid adding special tokens here
-            token_count = len(self.tokenizer.encode(msg, add_special_tokens=False))
+            tokens = self.tokenizer.encode(msg, add_special_tokens=False)
+            token_count = len(tokens)
+
+            # CRITICAL FIX: Truncate individual messages that exceed max_tokens
+            # This prevents OOM errors from oversized sequences reaching the model
+            if token_count > self.max_tokens:
+                # Truncate the message to max_tokens
+                tokens = tokens[: self.max_tokens]
+                msg = self.tokenizer.decode(tokens, skip_special_tokens=True)
+                token_count = self.max_tokens
+
             # If adding this message would exceed limit, save current chunk and start a new one.
             if current_tokens + token_count > self.max_tokens:
                 if current_chunk:

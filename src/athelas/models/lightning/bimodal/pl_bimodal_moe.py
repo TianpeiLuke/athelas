@@ -116,6 +116,11 @@ class BimodalBertMoE(pl.LightningModule):
         self.text_subnetwork = TextBertBase(config)
         text_dim = self.text_subnetwork.output_text_dim
 
+        # === Enable gradient checkpointing if configured ===
+        if config.get("use_gradient_checkpointing", False):
+            logger.info("Enabling gradient checkpointing for memory optimization")
+            self.text_subnetwork.bert.gradient_checkpointing_enable()
+
         # === Mixture-of-Experts fusion ===
         fusion_dim = config.get("fusion_dim", max(text_dim, tab_dim))
         self.moe_fusion = MixtureOfExperts(text_dim, tab_dim, fusion_dim)

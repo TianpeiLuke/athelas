@@ -189,6 +189,9 @@ def model_inference(
     Runs inference and returns predicted probabilities and true labels as tensors.
     Supports both binary and multiclass classification.
 
+    CRITICAL: In distributed training, ALL ranks must call this function.
+    Only rank 0 will process and return actual results; other ranks return dummy tensors.
+
     Args:
         model (pl.LightningModule): Trained Lightning model.
         dataloader (DataLoader): DataLoader for inference.
@@ -213,11 +216,27 @@ def model_inference(
         callbacks=[TQDMProgressBar()],
         accelerator=resolved_accelerator,
         devices=resolved_devices,
-        strategy="auto",
+        strategy="auto",  # Will use distributed strategy if torch.distributed is initialized
         inference_mode=True,
     )
 
+    # All ranks participate in test (required for distributed collective operations)
     tester.test(model, dataloaders=dataloader)
+
+    # CRITICAL FIX: Synchronize all ranks after test completes
+    if dist.is_initialized():
+        dist.barrier()
+
+    # Only rank 0 processes results; other ranks return dummy tensors
+    if dist.is_initialized() and dist.get_rank() != 0:
+        # Non-main ranks return dummy tensors (won't be used by caller)
+        dummy_preds = torch.zeros(1)
+        dummy_labels = torch.zeros(1, dtype=torch.long)
+        if return_dataframe:
+            return dummy_preds, dummy_labels, pd.DataFrame()
+        return dummy_preds, dummy_labels
+
+    # Main rank (rank 0) processes results
     result_folder = model.test_output_folder
     if not result_folder or not os.path.exists(result_folder):
         raise RuntimeError(

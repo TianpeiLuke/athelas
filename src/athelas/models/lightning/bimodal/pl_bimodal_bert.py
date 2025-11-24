@@ -94,6 +94,11 @@ class BimodalBert(pl.LightningModule):
         self.text_subnetwork = TextBertBase(config)
         text_dim = self.text_subnetwork.output_text_dim
 
+        # === Enable gradient checkpointing if configured ===
+        if config.get("use_gradient_checkpointing", False):
+            logger.info("Enabling gradient checkpointing for memory optimization")
+            self.text_subnetwork.bert.gradient_checkpointing_enable()
+
         # === Final classifier ===
         self.final_merge_network = nn.Sequential(
             nn.ReLU(),

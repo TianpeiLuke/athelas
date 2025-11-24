@@ -168,6 +168,8 @@ def build_text_pipeline_from_steps(
                 tokenizer,
                 add_special_tokens=True,
                 max_length=max_sen_len,
+                truncation=True,  # Explicitly enable truncation
+                padding="max_length",  # CRITICAL FIX: Force padding to max_length instead of "longest"
                 input_ids_key=input_ids_key,
                 attention_mask_key=attention_mask_key,
             )
