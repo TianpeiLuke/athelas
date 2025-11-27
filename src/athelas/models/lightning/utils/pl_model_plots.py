@@ -187,7 +187,7 @@ def roc_metric_plot(
         plt.title("ROC Curve (Binary)")
         plt.legend()
         plt.tight_layout()
-        file_path = os.path.join(path, "ROC-BSM.svg")
+        file_path = os.path.join(path, "ROC-BSM.png")
         plt.savefig(file_path)
         if writer:
             writer.add_figure("ROC/Binary", plt.gcf(), global_step=global_step)
@@ -229,7 +229,7 @@ def roc_metric_plot(
         plt.title("One-vs-Rest ROC Curve")
         plt.legend()
         plt.tight_layout()
-        file_path = os.path.join(path, "ROC-BSM-ovr.svg")
+        file_path = os.path.join(path, "ROC-BSM-ovr.png")
         plt.savefig(file_path)
         if writer:
             writer.add_figure(
@@ -249,7 +249,7 @@ def roc_metric_plot(
         plt.title("One-vs-Rest ROC Curve")
         plt.legend()
         plt.tight_layout()
-        file_path = os.path.join(path, "ROC-BSM-validation-ovr.svg")
+        file_path = os.path.join(path, "ROC-BSM-validation-ovr.png")
         plt.savefig(file_path)
         if writer:
             writer.add_figure(
@@ -285,7 +285,7 @@ def roc_metric_plot(
             plt.title(f"{avg.capitalize()}-Averaged ROC Curve")
             plt.legend()
             plt.tight_layout()
-            file_path = os.path.join(path, f"ROC-BSM-{avg}.svg")
+            file_path = os.path.join(path, f"ROC-BSM-{avg}.png")
             plt.savefig(file_path)
             if writer:
                 writer.add_figure(
@@ -334,7 +334,7 @@ def pr_metric_plot(
         plt.ylabel("Precision")
         plt.title("Precision-Recall Curve (Binary)")
         plt.legend()
-        file_path = os.path.join(path, "PR-BSM.svg")
+        file_path = os.path.join(path, "PR-BSM.png")
         plt.savefig(file_path)
         plt.close()
         if writer:
@@ -365,7 +365,7 @@ def pr_metric_plot(
         plt.ylabel("Precision")
         plt.title("One-vs-Rest PR Curve")
         plt.legend()
-        file_path = os.path.join(path, "PR-BSM-ovr.svg")
+        file_path = os.path.join(path, "PR-BSM-ovr.png")
         plt.savefig(file_path)
         plt.close()
         if writer:
@@ -384,7 +384,7 @@ def pr_metric_plot(
         plt.ylabel("Precision")
         plt.title("One-vs-Rest PR Curve")
         plt.legend()
-        file_path = os.path.join(path, "PR-BSM-validation-ovr.svg")
+        file_path = os.path.join(path, "PR-BSM-validation-ovr.png")
         plt.savefig(file_path)
         plt.close()
         if writer:
@@ -417,7 +417,7 @@ def pr_metric_plot(
             plt.ylabel("Precision")
             plt.title(f"{avg.capitalize()}-Averaged PR Curve")
             plt.legend()
-            file_path = os.path.join(path, f"PR-BSM-{avg}.svg")
+            file_path = os.path.join(path, f"PR-BSM-{avg}.png")
             plt.savefig(file_path)
             plt.close()
             if writer:
