@@ -21,7 +21,7 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="bs4")
 
 
-class BSMDataset(Dataset):
+class PipelineDataset(Dataset):
     """
     Custom dataset for multimodal input supporting text, tabular, categorical,
     and Parquet/CSV/TSV file formats with per-column processing pipelines.
