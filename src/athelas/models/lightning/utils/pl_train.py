@@ -182,6 +182,7 @@ def model_inference(
     device: Union[str, int, List[int]] = "auto",
     model_log_path: str = "./model_logs",
     return_dataframe: bool = False,
+    label_col: str = "label",
 ) -> Union[
     Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, pd.DataFrame]
 ]:
@@ -199,6 +200,7 @@ def model_inference(
         device (str/int/List[int]): Device setting.
         model_log_path (str): Path to save logs.
         return_dataframe (bool): Whether to return the original dataframe.
+        label_col (str): Name of the label column in the dataframe. Defaults to "label".
 
     Returns:
         Tuple of (y_pred, y_true) or (y_pred, y_true, df) depending on `return_dataframe`.
@@ -267,7 +269,7 @@ def model_inference(
             [ast.literal_eval(p) if isinstance(p, str) else p for p in df["prob"]]
         )
 
-    y_true = torch.tensor(df["label"].values).long()
+    y_true = torch.tensor(df[label_col].values).long()
 
     if return_dataframe:
         return y_pred, y_true, df

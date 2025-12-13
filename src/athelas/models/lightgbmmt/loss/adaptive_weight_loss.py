@@ -182,13 +182,22 @@ class AdaptiveWeightLoss(BaseLossFunction):
         Apply square root dampening to similarity weights.
 
         Reduces extreme weight values for more stable training.
-        Formula: w_dampened = sqrt(w_raw)
+        Optionally re-normalizes based on loss_sqrt_normalize parameter.
+
+        Formula:
+        - If loss_sqrt_normalize=True: w = normalize(sqrt(w_raw))
+        - If loss_sqrt_normalize=False: w = sqrt(w_raw) [legacy]
         """
         # Apply square root to dampen extreme values
         weights_dampened = np.sqrt(raw_weights)
 
-        # Re-normalize after dampening
-        weights = self.normalize(weights_dampened)
+        # Conditionally re-normalize based on hyperparameter
+        if getattr(self.hyperparams, "loss_sqrt_normalize", True):
+            # Default: re-normalize for numerical stability
+            weights = self.normalize(weights_dampened)
+        else:
+            # Legacy behavior: no re-normalization
+            weights = weights_dampened
 
         return weights
 

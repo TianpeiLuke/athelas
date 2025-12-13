@@ -13,7 +13,7 @@ from .adaptive_weight_loss import AdaptiveWeightLoss
 from .knowledge_distillation_loss import KnowledgeDistillationLoss
 
 if TYPE_CHECKING:
-    from ..hyperparams.hyperparameters_lightgbmmt import (
+    from ...hyperparams.hyperparameters_lightgbmmt import (
         LightGBMMtModelHyperparameters,
     )
 

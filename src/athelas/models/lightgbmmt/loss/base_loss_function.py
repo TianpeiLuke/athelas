@@ -12,7 +12,7 @@ from scipy.special import expit
 from sklearn.metrics import roc_auc_score
 
 if TYPE_CHECKING:
-    from ..hyperparams.hyperparameters_lightgbmmt import (
+    from ...hyperparams.hyperparameters_lightgbmmt import (
         LightGBMMtModelHyperparameters,
     )
 
@@ -121,8 +121,10 @@ class BaseLossFunction(ABC):
         if self.cache_predictions and cache_key in self._pred_cache:
             return self._pred_cache[cache_key]
 
-        # Reshape
-        preds_mat = preds.reshape(-1, num_col)
+        # Reshape from flattened [T*N] to matrix [N, T]
+        # LightGBM flattens as: transpose then reshape
+        # So we reverse: reshape to [T, N] then transpose to [N, T]
+        preds_mat = preds.reshape((num_col, -1)).transpose()
 
         # Apply sigmoid
         preds_mat = expit(preds_mat)
@@ -141,10 +143,13 @@ class BaseLossFunction(ABC):
         """
         Reshape label matrix with validation.
 
+        Retrieves multi-task labels directly from Dataset.get_label().
+        The Dataset is created with label=y_train (2D array) in MtgbmModel._prepare_data().
+
         Parameters
         ----------
         train_data : lightgbm.Dataset
-            Training dataset containing labels
+            Training dataset containing multi-task labels
         num_col : int
             Number of tasks
 
@@ -158,11 +163,14 @@ class BaseLossFunction(ABC):
         if self.cache_predictions and cache_key in self._label_cache:
             return self._label_cache[cache_key]
 
-        # Get labels
+        # Get multi-task labels directly from Dataset
+        # Dataset stores the 2D label array passed during creation
         labels = train_data.get_label()
 
-        # Reshape
-        labels_mat = labels.reshape(-1, num_col)
+        # Reshape from flattened [T*N] to matrix [N, T]
+        # LightGBM flattens as: transpose then reshape
+        # So we reverse: reshape to [T, N] then transpose to [N, T]
+        labels_mat = labels.reshape((num_col, -1)).transpose()
 
         # Validate
         if labels_mat.shape[1] != num_col:

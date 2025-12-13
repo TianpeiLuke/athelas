@@ -119,13 +119,8 @@ def install_packages(packages: list, use_secure: bool = USE_SECURE_PYPI) -> None
 # ============================================================================
 
 required_packages = [
-    "scikit-learn>=0.23.2,<1.0.0",
-    "pandas>=1.2.0,<2.0.0",
-    "pyarrow>=4.0.0,<6.0.0",
+    "pyarrow>=10.0.0",
     "pydantic>=2.0.0,<3.0.0",
-    "typing-extensions>=4.2.0",
-    "matplotlib>=3.0.0",
-    "scipy>=1.7.0",
     "lightgbm>=3.3.0",
 ]
 
@@ -152,15 +147,15 @@ from sklearn.metrics import (
     precision_recall_curve,
 )
 
-from .loss.loss_factory import LossFactory
-from .factory.model_factory import ModelFactory
-from .base.training_state import TrainingState
+from models.loss.loss_factory import LossFactory
+from models.factory.model_factory import ModelFactory
+from models.base.training_state import TrainingState
 
-from .hyperparams.hyperparameters_lightgbmmt import LightGBMMtModelHyperparameters
+from hyperparams.hyperparameters_lightgbmmt import LightGBMMtModelHyperparameters
 
 # Preprocessing imports
-from ...processing.categorical.risk_table_processor import RiskTableMappingProcessor
-from ...processing.numerical.numerical_imputation_processor import (
+from processing.categorical.risk_table_processor import RiskTableMappingProcessor
+from processing.numerical.numerical_imputation_processor import (
     NumericalVariableImputationProcessor,
 )
 
@@ -258,6 +253,246 @@ def find_first_data_file(data_dir: str) -> str:
         if fname.lower().endswith((".csv", ".parquet", ".json", ".tsv")):
             return os.path.join(data_dir, fname)
     return None
+
+
+# -------------------------------------------------------------------------
+# FIELD TYPE VALIDATION FUNCTIONS
+# -------------------------------------------------------------------------
+
+
+def validate_categorical_fields(
+    df: pd.DataFrame, cat_fields: List[str], dataset_name: str = "dataset"
+) -> None:
+    """
+    Strictly validate categorical fields before risk table mapping.
+
+    Args:
+        df: Input dataframe
+        cat_fields: List of categorical field names from config
+        dataset_name: Name of dataset for error messages (e.g., "train", "val", "test")
+
+    Raises:
+        ValueError: If field not found in dataframe
+        TypeError: If field has wrong type with specific field names
+    """
+    mismatched_fields = []
+
+    for field in cat_fields:
+        if field not in df.columns:
+            raise ValueError(
+                f"Categorical field '{field}' not found in {dataset_name} dataframe"
+            )
+
+        dtype = df[field].dtype
+        # Allow: object, category, string types
+        if dtype not in [
+            "object",
+            "category",
+            "string",
+        ] and not pd.api.types.is_string_dtype(df[field]):
+            mismatched_fields.append(
+                {
+                    "field": field,
+                    "current_type": str(dtype),
+                    "expected_type": "categorical (object/string/category)",
+                }
+            )
+
+    if mismatched_fields:
+        error_msg = f"Categorical field type validation failed for {dataset_name}:\n"
+        for info in mismatched_fields:
+            error_msg += (
+                f"  - Field '{info['field']}': "
+                f"expected {info['expected_type']}, "
+                f"but got {info['current_type']}\n"
+            )
+        error_msg += "\nCategorical fields must have object, string, or category dtype before risk table mapping."
+        raise TypeError(error_msg)
+
+
+def convert_numerical_fields_to_numeric(
+    df: pd.DataFrame, num_fields: List[str], dataset_name: str = "dataset"
+) -> pd.DataFrame:
+    """
+    Convert numerical fields from object dtype to float64.
+
+    This handles string-formatted numbers commonly found in CSV/Parquet files.
+    Invalid values are converted to NaN and handled by subsequent imputation.
+
+    Args:
+        df: Input dataframe
+        num_fields: List of numerical field names from config
+        dataset_name: Name of dataset for logging
+
+    Returns:
+        DataFrame with converted numerical columns
+
+    Raises:
+        ValueError: If field not found in dataframe
+    """
+    df_converted = df.copy()
+    converted_count = 0
+
+    for field in num_fields:
+        if field not in df_converted.columns:
+            raise ValueError(
+                f"Numerical field '{field}' not found in {dataset_name} dataframe"
+            )
+
+        # Check if field needs conversion (is object dtype)
+        if df_converted[field].dtype == "object":
+            logger.info(
+                f"  Converting {field} from object to numeric (invalid → NaN)..."
+            )
+            df_converted[field] = pd.to_numeric(
+                df_converted[field],
+                errors="coerce",  # Invalid values become NaN
+            )
+            converted_count += 1
+
+    if converted_count > 0:
+        logger.info(
+            f"✓ Converted {converted_count}/{len(num_fields)} fields from object to numeric in {dataset_name}"
+        )
+    else:
+        logger.info(
+            f"✓ All numerical fields already have correct dtype in {dataset_name}"
+        )
+
+    return df_converted
+
+
+# -------------------------------------------------------------------------
+# FEATURE SELECTION INTEGRATION FUNCTIONS
+# -------------------------------------------------------------------------
+
+
+def detect_feature_selection_artifacts(
+    model_artifacts_dir: Optional[str],
+) -> Optional[str]:
+    """
+    Conservatively detect if feature selection was applied in model_artifacts_input.
+    Returns path to selected_features.json if found, None otherwise.
+
+    Args:
+        model_artifacts_dir: Path to model artifacts directory
+
+    Returns:
+        Path to selected_features.json if found, None otherwise
+    """
+    if not model_artifacts_dir or not os.path.exists(model_artifacts_dir):
+        logger.info("No model artifacts directory - no feature selection artifacts")
+        return None
+
+    # Check for selected_features.json in model_artifacts_input
+    features_path = os.path.join(model_artifacts_dir, "selected_features.json")
+
+    if os.path.exists(features_path):
+        logger.info(f"Feature selection artifacts detected at: {features_path}")
+        return features_path
+
+    logger.info("No feature selection artifacts found in model_artifacts_input")
+    return None
+
+
+def load_selected_features(fs_artifacts_path: str) -> Optional[List[str]]:
+    """
+    Load selected features from feature selection artifacts.
+
+    Args:
+        fs_artifacts_path: Path to selected_features.json
+
+    Returns:
+        List of selected feature names, or None if loading fails
+    """
+    try:
+        with open(fs_artifacts_path, "r") as f:
+            fs_data = json.load(f)
+
+        selected_features = fs_data.get("selected_features", [])
+        if not selected_features:
+            logger.warning("Empty selected_features list found")
+            return None
+
+        logger.info(f"Loaded {len(selected_features)} selected features from artifacts")
+        logger.info(f"Selected features: {selected_features}")
+        return selected_features
+
+    except Exception as e:
+        logger.warning(f"Error loading feature selection artifacts: {e}")
+        return None
+
+
+def get_effective_feature_columns(
+    hyperparams: LightGBMMtModelHyperparameters,
+    model_artifacts_input_dir: Optional[str],
+    train_df: pd.DataFrame,
+) -> Tuple[List[str], bool]:
+    """
+    Get feature columns with fallback-first approach.
+
+    Args:
+        hyperparams: Hyperparameters object
+        model_artifacts_input_dir: Path to model artifacts directory
+        train_df: Training dataframe for validation
+
+    Returns:
+        Tuple of (feature_columns, feature_selection_applied)
+    """
+    # STEP 1: Always start with original behavior
+    original_features = hyperparams.tab_field_list + hyperparams.cat_field_list
+
+    logger.info("=== FEATURE SELECTION DETECTION ===")
+    logger.info(f"Original configuration features: {len(original_features)}")
+
+    # STEP 2: Check if feature selection artifacts exist
+    fs_artifacts_path = detect_feature_selection_artifacts(model_artifacts_input_dir)
+    if fs_artifacts_path is None:
+        # NO FEATURE SELECTION - Original behavior exactly
+        logger.info(
+            "Using original feature configuration (no feature selection detected)"
+        )
+        logger.info("=====================================")
+        return original_features, False
+
+    # STEP 3: Feature selection detected - try to load
+    selected_features = load_selected_features(fs_artifacts_path)
+    if selected_features is None:
+        logger.warning(
+            "Failed to load selected features - falling back to original behavior"
+        )
+        logger.info("=====================================")
+        return original_features, False
+
+    # STEP 4: Validate selected features exist in data
+    available_columns = set(train_df.columns)
+    missing_features = [f for f in selected_features if f not in available_columns]
+
+    if missing_features:
+        logger.warning(f"Selected features missing from data: {missing_features}")
+        logger.warning("Falling back to original behavior")
+        logger.info("=====================================")
+        return original_features, False
+
+    # STEP 5: Additional validation - ensure reasonable subset
+    if len(selected_features) > len(original_features):
+        logger.warning(
+            f"Selected features ({len(selected_features)}) more than original ({len(original_features)}) - suspicious"
+        )
+        logger.warning("Falling back to original behavior")
+        logger.info("=====================================")
+        return original_features, False
+
+    # STEP 6: Success - use selected features
+    logger.info(f"Feature selection successfully applied!")
+    logger.info(
+        f"Features reduced from {len(original_features)} to {len(selected_features)}"
+    )
+    logger.info(
+        f"Reduction ratio: {len(selected_features) / len(original_features):.2%}"
+    )
+    logger.info("=====================================")
+    return selected_features, True
 
 
 # -------------------------------------------------------------------------
@@ -584,6 +819,69 @@ def create_task_indices(
     return trn_sublabel_idx, val_sublabel_idx
 
 
+def prepare_training_data(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: Optional[pd.DataFrame],
+    feature_columns: List[str],
+    task_columns: List[str],
+) -> Tuple[pd.DataFrame, pd.DataFrame, Optional[pd.DataFrame]]:
+    """
+    Prepare clean DataFrames with ONLY features and task labels for model training.
+
+    This function follows the XGBoost pattern of explicitly selecting only the columns
+    needed for model training, excluding ID columns, main labels, and other metadata.
+
+    Args:
+        train_df: Training DataFrame (may contain ID, labels, metadata)
+        val_df: Validation DataFrame (may contain ID, labels, metadata)
+        test_df: Test DataFrame (may contain ID, labels, metadata)
+        feature_columns: List of feature column names to include
+        task_columns: List of task label column names to include
+
+    Returns:
+        Tuple of (train_clean, val_clean, test_clean) containing only features + task labels
+    """
+    # Columns to include: features + task labels ONLY
+    cols_to_keep = feature_columns + task_columns
+
+    logger.info("=" * 70)
+    logger.info("PREPARING CLEAN DATA FOR MODEL TRAINING")
+    logger.info("=" * 70)
+    logger.info(f"Feature columns: {len(feature_columns)}")
+    logger.info(f"Task label columns: {len(task_columns)}")
+    logger.info(f"Total columns to keep: {len(cols_to_keep)}")
+
+    # Verify all columns exist
+    missing_train = set(cols_to_keep) - set(train_df.columns)
+    missing_val = set(cols_to_keep) - set(val_df.columns)
+
+    if missing_train:
+        raise ValueError(f"Training data missing columns: {missing_train}")
+    if missing_val:
+        raise ValueError(f"Validation data missing columns: {missing_val}")
+
+    # Validate test_df BEFORE accessing
+    if test_df is not None:
+        missing_test = set(cols_to_keep) - set(test_df.columns)
+        if missing_test:
+            raise ValueError(f"Test data missing columns: {missing_test}")
+
+    # Create clean DataFrames with ONLY the required columns
+    train_clean = train_df[cols_to_keep].copy()
+    val_clean = val_df[cols_to_keep].copy()
+    test_clean = test_df[cols_to_keep].copy() if test_df is not None else None
+
+    logger.info(f"✓ Filtered training data: {train_df.shape} → {train_clean.shape}")
+    logger.info(f"✓ Filtered validation data: {val_df.shape} → {val_clean.shape}")
+    if test_clean is not None:
+        logger.info(f"✓ Filtered test data: {test_df.shape} → {test_clean.shape}")
+
+    logger.info("=" * 70)
+
+    return train_clean, val_clean, test_clean
+
+
 # -------------------------------------------------------------------------
 # MULTI-TASK INFERENCE & EVALUATION
 # -------------------------------------------------------------------------
@@ -597,8 +895,9 @@ def predict_multitask(
 
     Returns: np.ndarray of shape (n_samples, n_tasks) with probabilities
     """
-    X = df[feature_columns]
-    predictions = model.predict(X)
+    # Pass full DataFrame and feature_columns to model
+    # Model handles feature extraction internally
+    predictions = model.predict(df, feature_columns)
     return predictions
 
 
@@ -824,7 +1123,24 @@ def save_artifacts(
         json.dump(hyperparams.model_dump(), f, indent=2, sort_keys=True)
     logger.info(f"Saved hyperparameters to {hyperparams_file}")
 
-    # 7. Save weight evolution (multi-task specific)
+    # 7. Save feature importance
+    try:
+        feature_importance_file = os.path.join(model_path, "feature_importance.json")
+        # Get feature importance from LightGBM model
+        # Note: model.model refers to the underlying LightGBM Booster
+        importance_values = model.model.feature_importance(importance_type="gain")
+
+        # Create dictionary mapping feature names to importance values
+        importance_dict = dict(zip(feature_columns, importance_values.tolist()))
+
+        with open(feature_importance_file, "w") as f:
+            json.dump(importance_dict, f, indent=2)
+        logger.info(f"Saved feature importance to {feature_importance_file}")
+    except Exception as e:
+        logger.warning(f"Could not save feature importance: {e}")
+        logger.warning("Continuing without feature importance artifact")
+
+    # 8. Save weight evolution (multi-task specific)
     if training_state.weight_evolution:
         weight_file = os.path.join(model_path, "weight_evolution.json")
         with open(weight_file, "w") as f:
@@ -864,14 +1180,43 @@ def main(
         output_dir = output_paths["evaluation_output"]
         model_artifacts_input_dir = input_paths.get("model_artifacts_input")
 
-        # Priority-based hyperparameters loading
-        hparam_path = "/opt/ml/code/hyperparams/hyperparameters.json"
-        if not os.path.exists(hparam_path):
-            if "hyperparameters_s3_uri" in input_paths:
-                hparam_path = input_paths["hyperparameters_s3_uri"]
-                if not hparam_path.endswith("hyperparameters.json"):
-                    hparam_path = os.path.join(hparam_path, "hyperparameters.json")
+        # Priority-based hyperparameters path resolution with region-specific support
+        # Get region from environment variable
+        region = environ_vars.get("REGION", "").upper()
 
+        if region in ["NA", "EU", "FE"]:
+            hparam_filename = f"hyperparameters_{region}.json"
+            logger.info(f"Loading region-specific hyperparameters for region: {region}")
+        else:
+            hparam_filename = "hyperparameters.json"
+            if region:
+                logger.warning(
+                    f"Unknown REGION '{region}', falling back to default hyperparameters.json"
+                )
+            else:
+                logger.info("No REGION specified, using default hyperparameters.json")
+
+        # Priority 1: Start with code directory (highest priority)
+        hparam_path = f"/opt/ml/code/hyperparams/{hparam_filename}"
+
+        # Priority 2: If code directory file doesn't exist, check input_paths
+        if not os.path.exists(hparam_path):
+            logger.info(f"Hyperparameters not found in code directory: {hparam_path}")
+
+            if "hyperparameters_s3_uri" in input_paths:
+                hparam_dir = input_paths["hyperparameters_s3_uri"]
+                # If it's a directory path, append the filename
+                if not hparam_dir.endswith(hparam_filename):
+                    hparam_path = os.path.join(hparam_dir, hparam_filename)
+                else:
+                    hparam_path = hparam_dir
+                logger.info(f"Using fallback hyperparameters path: {hparam_path}")
+            else:
+                logger.error("No hyperparameters_s3_uri provided in input_paths")
+        else:
+            logger.info(f"Found hyperparameters in code directory: {hparam_path}")
+
+        logger.info(f"Loading hyperparameters from: {hparam_path}")
         logger.info(f"Loading configuration from {hparam_path}")
         with open(hparam_path, "r") as f:
             hyperparams_dict = json.load(f)
@@ -914,6 +1259,47 @@ def main(
             precomputed["loaded"]["risk_tables"],
         )
 
+        # ===== NUMERIC TYPE CONVERSION =====
+        logger.info("=" * 70)
+        logger.info("NUMERIC TYPE CONVERSION")
+        logger.info("=" * 70)
+
+        # Convert numerical fields from object to numeric (only if computing inline)
+        if not precomputed["loaded"]["imputation"]:
+            logger.info("Converting numerical fields to numeric dtype...")
+            train_df = convert_numerical_fields_to_numeric(
+                train_df, hyperparams.tab_field_list, "train"
+            )
+            val_df = convert_numerical_fields_to_numeric(
+                val_df, hyperparams.tab_field_list, "val"
+            )
+            if test_df is not None:
+                test_df = convert_numerical_fields_to_numeric(
+                    test_df, hyperparams.tab_field_list, "test"
+                )
+            logger.info("✓ Numerical field conversion completed")
+        else:
+            logger.info(
+                "Skipping numerical field conversion (using pre-computed imputation)"
+            )
+
+        # Validate categorical fields before risk table mapping (only if computing inline)
+        if not precomputed["loaded"]["risk_tables"]:
+            logger.info(
+                "Validating categorical field types before risk table mapping..."
+            )
+            validate_categorical_fields(train_df, hyperparams.cat_field_list, "train")
+            validate_categorical_fields(val_df, hyperparams.cat_field_list, "val")
+            if test_df is not None:
+                validate_categorical_fields(test_df, hyperparams.cat_field_list, "test")
+            logger.info("✓ Categorical field type validation passed")
+        else:
+            logger.info(
+                "Skipping categorical field validation (using pre-computed risk tables)"
+            )
+
+        logger.info("=" * 70)
+
         # ===== 1. Numerical Imputation =====
         if precomputed["loaded"]["imputation"]:
             impute_dict = precomputed["impute_dict"]
@@ -936,13 +1322,63 @@ def main(
             )
             logger.info("✓ Risk table mapping completed")
 
-        # ===== 3. Feature Columns =====
-        feature_columns = hyperparams.tab_field_list + hyperparams.cat_field_list
-        logger.info(f"Using {len(feature_columns)} features: {feature_columns}")
+        # ===== 3. Feature Selection =====
+        if use_precomputed_features:
+            logger.info(
+                "Determining effective feature columns (USE_PRECOMPUTED_FEATURES=true)..."
+            )
+            feature_columns, fs_applied = get_effective_feature_columns(
+                hyperparams, model_artifacts_input_dir, train_df
+            )
+
+            if fs_applied:
+                logger.info("✓ Feature selection successfully applied")
+                logger.info(f"  → Using {len(feature_columns)} selected features")
+
+                # Filter DataFrames to only include selected features plus label and task columns
+                label_col = hyperparams.label_name
+                id_col = hyperparams.id_name
+
+                # Identify task columns before filtering (do this once!)
+                task_columns = identify_task_columns(train_df, hyperparams)
+
+                # Keep only selected features, label, ID, and task columns (deduplicated)
+                cols_to_keep = list(
+                    dict.fromkeys(
+                        feature_columns
+                        + [label_col]
+                        + task_columns
+                        + ([id_col] if id_col in train_df.columns else [])
+                    )
+                )
+
+                train_df = train_df[cols_to_keep]
+                val_df = val_df[cols_to_keep]
+                if test_df is not None:
+                    test_df = test_df[cols_to_keep]
+
+                logger.info(f"  → Filtered datasets to {len(cols_to_keep)} columns")
+            else:
+                logger.info(
+                    "Feature selection artifacts not found - using original features"
+                )
+                feature_columns = (
+                    hyperparams.tab_field_list + hyperparams.cat_field_list
+                )
+        else:
+            logger.info(
+                "USE_PRECOMPUTED_FEATURES=false - using original feature configuration"
+            )
+            feature_columns = hyperparams.tab_field_list + hyperparams.cat_field_list
+            logger.info(f"  → Using {len(feature_columns)} features from config")
 
         # ===== 4. Identify Task Columns =====
-        logger.info("Identifying task columns...")
-        task_columns = identify_task_columns(train_df, hyperparams)
+        # Only identify if not already done in feature selection block
+        if "task_columns" not in locals():
+            logger.info("Identifying task columns...")
+            task_columns = identify_task_columns(train_df, hyperparams)
+        else:
+            logger.info(f"Using task columns identified earlier: {task_columns}")
 
         # num_tasks is now automatically derived from len(task_label_names)
         logger.info(
@@ -977,11 +1413,26 @@ def main(
             hyperparams=hyperparams,
         )
 
-        # ===== 9. Train Model =====
-        logger.info("Training model...")
-        results = model.train(train_df, val_df, test_df)
+        # ===== 9. Prepare Clean Training Data (XGBoost Pattern) =====
+        logger.info(
+            "Preparing clean data for model training (filtering out ID/metadata)..."
+        )
+        train_clean, val_clean, test_clean = prepare_training_data(
+            train_df, val_df, test_df, feature_columns, task_columns
+        )
 
-        # ===== 10. Save Model Artifacts =====
+        # ===== 10. Train Model =====
+        logger.info("Training model...")
+        results = model.train(
+            train_clean,
+            val_clean,
+            test_clean,
+            feature_columns=feature_columns,
+            task_columns=task_columns,
+        )
+        logger.info("✓ Training completed successfully")
+
+        # ===== 11. Save Model Artifacts =====
         logger.info("Saving model artifacts...")
         save_artifacts(
             model=model,
@@ -993,7 +1444,7 @@ def main(
             training_state=training_state,
         )
 
-        # ===== 11. Evaluation =====
+        # ===== 12. Evaluation =====
         logger.info("====== STARTING EVALUATION PHASE ======")
 
         # Validation evaluation
@@ -1089,6 +1540,7 @@ if __name__ == "__main__":
             "USE_PRECOMPUTED_FEATURES", "false"
         ).lower()
         == "true",
+        "REGION": os.environ.get("REGION", "NA"),
     }
 
     # Create empty args namespace to maintain function signature

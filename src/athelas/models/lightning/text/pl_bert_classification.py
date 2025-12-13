@@ -263,7 +263,8 @@ class TextBertClassification(pl.LightningModule):
         if label_list is not None:
             df["label"] = label_list
         path = os.path.join(output_folder, "test_result.tsv")
-        df.to_csv(path, sep="\t", index=False)
+        # Fix for pandas 2.x compatibility: reset index before saving
+        df.reset_index(drop=True).to_csv(path, sep="\t", index=False)
         logger.info("Saved test results to %s", path)
 
     def on_test_epoch_end(self):

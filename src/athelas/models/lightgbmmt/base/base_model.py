@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 if TYPE_CHECKING:
-    from ..hyperparams.hyperparameters_lightgbmmt import LightGBMMtModelHyperparameters
+    from ...hyperparams.hyperparameters_lightgbmmt import LightGBMMtModelHyperparameters
     from ..loss.base_loss_function import BaseLossFunction
 
 from .training_state import TrainingState
@@ -27,8 +27,8 @@ class BaseMultiTaskModel(ABC):
 
     def __init__(
         self,
-        loss_function: "BaseLossFunction",
-        training_state: TrainingState,
+        loss_function: Optional["BaseLossFunction"],
+        training_state: Optional[TrainingState],
         hyperparams: "LightGBMMtModelHyperparameters",
     ):
         """
@@ -36,15 +36,15 @@ class BaseMultiTaskModel(ABC):
 
         Parameters
         ----------
-        loss_function : BaseLossFunction
-            Loss function instance
-        training_state : TrainingState
-            Training state for tracking progress
+        loss_function : BaseLossFunction, optional
+            Loss function instance (not required for inference-only mode)
+        training_state : TrainingState, optional
+            Training state for tracking progress (not required for inference-only mode)
         hyperparams : LightGBMMtModelHyperparameters
             Model hyperparameters
         """
         self.loss_function = loss_function
-        self.training_state = training_state
+        self.training_state = training_state or TrainingState()
         self.hyperparams = hyperparams
 
         # Setup logging
@@ -64,6 +64,8 @@ class BaseMultiTaskModel(ABC):
         train_df: pd.DataFrame,
         val_df: pd.DataFrame,
         test_df: Optional[pd.DataFrame] = None,
+        feature_columns: Optional[list] = None,
+        task_columns: Optional[list] = None,
     ) -> Dict[str, Any]:
         """
         Template method for training workflow.
@@ -73,11 +75,15 @@ class BaseMultiTaskModel(ABC):
         Parameters
         ----------
         train_df : DataFrame
-            Training data
+            Training data (should contain only feature_columns + task_columns)
         val_df : DataFrame
-            Validation data
+            Validation data (should contain only feature_columns + task_columns)
         test_df : DataFrame, optional
-            Test data
+            Test data (should contain only feature_columns + task_columns)
+        feature_columns : list, optional
+            List of feature column names in order
+        task_columns : list, optional
+            List of task label column names in order
 
         Returns
         -------
@@ -88,7 +94,9 @@ class BaseMultiTaskModel(ABC):
 
         # Step 1: Prepare data
         self.logger.info("Step 1: Preparing data...")
-        train_data, val_data, test_data = self._prepare_data(train_df, val_df, test_df)
+        train_data, val_data, test_data = self._prepare_data(
+            train_df, val_df, test_df, feature_columns, task_columns
+        )
 
         # Step 2: Initialize model
         self.logger.info("Step 2: Initializing model...")
@@ -115,11 +123,28 @@ class BaseMultiTaskModel(ABC):
         train_df: pd.DataFrame,
         val_df: pd.DataFrame,
         test_df: Optional[pd.DataFrame],
+        feature_columns: Optional[list] = None,
+        task_columns: Optional[list] = None,
     ) -> tuple:
         """
         Prepare data for training.
 
         Subclasses implement specific data preparation logic.
+        Training script controls the schema (WHAT columns to use).
+        Model just handles format conversion (HOW to convert for ML library).
+
+        Parameters
+        ----------
+        train_df : DataFrame
+            Training data (should contain only feature_columns + task_columns)
+        val_df : DataFrame
+            Validation data
+        test_df : DataFrame, optional
+            Test data
+        feature_columns : list, optional
+            List of feature column names in exact order
+        task_columns : list, optional
+            List of task label column names in exact order
 
         Returns
         -------
@@ -163,9 +188,9 @@ class BaseMultiTaskModel(ABC):
         Parameters
         ----------
         val_data : Any
-            Validation data
+            Validation data (Dataset format)
         test_data : Any, optional
-            Test data
+            Test data (Dataset format)
 
         Returns
         -------
@@ -174,28 +199,83 @@ class BaseMultiTaskModel(ABC):
         """
         metrics = {}
 
-        # Validation metrics
-        val_preds = self._predict(val_data)
+        # Extract features from Dataset for prediction
+        # Model's _predict() expects numpy arrays, not Dataset objects
+        val_features = val_data.data
+        val_preds = self._predict(val_features)
         val_metrics = self._compute_metrics(val_data, val_preds)
         metrics["validation"] = val_metrics
 
         # Test metrics if available
         if test_data is not None:
-            test_preds = self._predict(test_data)
+            test_features = test_data.data
+            test_preds = self._predict(test_features)
             test_metrics = self._compute_metrics(test_data, test_preds)
             metrics["test"] = test_metrics
 
         return metrics
 
+    def predict(
+        self, df: pd.DataFrame, feature_columns: Optional[list] = None
+    ) -> np.ndarray:
+        """
+        Public prediction method.
+
+        Accepts DataFrame (same format as training), extracts features,
+        and generates predictions.
+
+        Parameters
+        ----------
+        df : DataFrame
+            Data to predict on (may contain features + other columns)
+        feature_columns : list, optional
+            List of feature column names to use
+            If not provided, model uses hyperparameters
+
+        Returns
+        -------
+        predictions : np.ndarray
+            Model predictions
+        """
+        # Prepare data for prediction (extracts features, creates Dataset)
+        data = self._prepare_prediction_data(df, feature_columns)
+
+        return self._predict(data)
+
+    @abstractmethod
+    def _prepare_prediction_data(
+        self, df: pd.DataFrame, feature_columns: Optional[list] = None
+    ) -> Any:
+        """
+        Prepare data for prediction (no labels needed).
+
+        Subclasses implement model-specific prediction data preparation.
+        Similar to _prepare_data but without labels.
+
+        Parameters
+        ----------
+        df : DataFrame
+            Data to predict on (may contain features + other columns)
+        feature_columns : list, optional
+            List of feature column names to use
+            If not provided, model uses hyperparameters
+
+        Returns
+        -------
+        data : Any
+            Data in model-specific format
+        """
+        pass
+
     @abstractmethod
     def _predict(self, data: Any) -> np.ndarray:
         """
-        Generate predictions.
+        Generate predictions (internal method).
 
         Parameters
         ----------
         data : Any
-            Data to predict on
+            Data to predict on (model-specific format)
 
         Returns
         -------

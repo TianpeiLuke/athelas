@@ -169,10 +169,29 @@ class LightGBMMtModelHyperparameters(ModelHyperparameters):
     )
 
     loss_weight_lr: float = Field(
-        default=0.1,
+        default=1.0,
         gt=0,
         le=1,
-        description="Learning rate for similarity-based weight updates (adaptive loss)",
+        description=(
+            "Learning rate for adaptive weight updates using Exponential Moving Average (EMA). "
+            "Controls how quickly task weights adapt to similarity changes during training.\n\n"
+            "Algorithm: w_new = (1 - lr) * w_old + lr * w_raw\n"
+            "- w_raw: Raw similarity-based weights computed from Jensen-Shannon divergence\n"
+            "- w_old: Previous iteration weights\n"
+            "- w_new: Updated weights for current iteration\n\n"
+            "Impact on Training:\n"
+            "- lr = 1.0 (default): No smoothing, direct weight updates. Matches legacy behavior. "
+            "Fast adaptation but may oscillate. Best for stable similarity patterns.\n"
+            "- lr = 0.1: Typical smoothing. 10% new weights + 90% old weights. "
+            "Balanced between stability and responsiveness. Recommended for most use cases.\n"
+            "- lr = 0.01: Heavy smoothing. Very stable weight trajectories but slow adaptation. "
+            "Use when similarity patterns are noisy or unstable.\n\n"
+            "Trade-offs:\n"
+            "- Higher lr (→1.0): Faster adaptation, responsive to changes, but may oscillate/overshoot\n"
+            "- Lower lr (→0.0): Smoother trajectories, stable training, but slower to adapt to shifts\n\n"
+            "Recommendation: Start with default 1.0 (legacy). If weight oscillations observed, "
+            "try 0.1 for improved stability. Use <0.1 only for highly volatile similarity patterns."
+        ),
     )
 
     # Knowledge distillation
@@ -198,7 +217,58 @@ class LightGBMMtModelHyperparameters(ModelHyperparameters):
         default=0.01,
         gt=0,
         le=1,
-        description="Learning rate for delta weight updates (used with 'delta' method)",
+        description=(
+            "Learning rate for incremental (delta) weight updates when loss_weight_method='delta'. "
+            "Controls the magnitude of weight adjustments based on similarity changes between iterations.\n\n"
+            "Algorithm: w_new = w_old + delta_lr * (w_raw - w_cached)\n"
+            "- w_raw: Current raw similarity-based weights\n"
+            "- w_cached: Previous raw weights from last iteration\n"
+            "- delta: Change in raw weights (w_raw - w_cached)\n"
+            "- w_new: Updated weights after applying delta\n\n"
+            "Impact on Training:\n"
+            "- delta_lr = 0.01 (default): Very gradual weight updates. Conservative adaptation with strong "
+            "memory of previous weights. Highly stable but slow to respond to changes.\n"
+            "- delta_lr = 0.1: Moderate updates. Balances stability with responsiveness. "
+            "Good for moderately changing similarity patterns.\n"
+            "- delta_lr = 0.5: Aggressive updates. Fast adaptation to similarity changes. "
+            "May be unstable if patterns fluctuate rapidly.\n\n"
+            "Comparison with loss_weight_lr:\n"
+            "- delta method: Focuses on changes (incremental updates based on differences)\n"
+            "- standard method: Focuses on absolute values (EMA of raw weights)\n"
+            "- delta method provides stronger memory effect and smoother trajectories\n\n"
+            "Trade-offs:\n"
+            "- Higher delta_lr (→1.0): Faster response to changes, less weight memory, may be unstable\n"
+            "- Lower delta_lr (→0.0): Slower adaptation, stronger weight memory, very stable\n\n"
+            "Recommendation: Use default 0.01 for stable incremental updates. "
+            "Increase to 0.1 if faster adaptation needed. Only use >0.1 for rapidly changing tasks."
+        ),
+    )
+
+    loss_sqrt_normalize: bool = Field(
+        default=True,
+        description=(
+            "Apply L2 normalization after square root dampening when loss_weight_method='sqrt'. "
+            "Controls numerical stability vs exact legacy behavior trade-off.\n\n"
+            "Algorithm impact on sqrt method:\n"
+            "- True (default): w = normalize(sqrt(w_raw)) - Ensures weights sum to 1.0\n"
+            "- False (legacy): w = sqrt(w_raw) - No re-normalization after sqrt\n\n"
+            "When True (enhanced, default):\n"
+            "- Maintains consistent weight interpretation across iterations\n"
+            "- Prevents numerical drift over many iterations\n"
+            "- More numerically stable for long training runs\n"
+            "- sqrt dampening effect preserved, just normalized to sum=1.0\n\n"
+            "When False (exact legacy behavior):\n"
+            "- Matches original implementation exactly\n"
+            "- Weights may not sum to 1.0 after sqrt transformation\n"
+            "- Potential for gradual numerical drift\n"
+            "- Use only for exact legacy reproduction or validation\n\n"
+            "Mathematical difference:\n"
+            "- Both apply sqrt dampening: reduces extreme weight values\n"
+            "- True additionally ensures: ||w|| = 1 (L2 norm equals 1)\n"
+            "- False allows: ||w|| != 1 (weights may have different magnitudes)\n\n"
+            "Recommendation: Use True (default) for improved numerical stability. "
+            "Set False only when exact legacy behavior required for validation/migration."
+        ),
     )
 
     # Performance optimization

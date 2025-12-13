@@ -7,7 +7,7 @@ Provides centralized model creation with type safety and validation.
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..hyperparams.hyperparameters_lightgbmmt import LightGBMMtModelHyperparameters
+    from ...hyperparams.hyperparameters_lightgbmmt import LightGBMMtModelHyperparameters
     from ..loss.base_loss_function import BaseLossFunction
     from ..base.training_state import TrainingState
 
