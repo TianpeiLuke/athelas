@@ -64,6 +64,13 @@ class TrainingState(BaseModel):
         default_factory=list, description="Per-task metrics history"
     )
 
+    raw_task_auc: List[List[float]] = Field(
+        default_factory=list,
+        description="Raw AUC scores per task at each iteration. "
+        "Format: [[task0_auc, task1_auc, ...], ...]. "
+        "Matches legacy eval_mat structure for functional equivalence.",
+    )
+
     # Early stopping
     epochs_without_improvement: int = Field(
         default=0, ge=0, description="Number of consecutive epochs without improvement"

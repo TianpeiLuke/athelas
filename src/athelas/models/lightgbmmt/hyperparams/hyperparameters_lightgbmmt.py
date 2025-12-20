@@ -47,7 +47,24 @@ class LightGBMMtModelHyperparameters(ModelHyperparameters):
 
     main_task_index: int = Field(
         ge=0,
-        description="Index of the main task in the task list (e.g., 0 = first task, 1 = second task)",
+        description=(
+            "Index of the main task within task_label_names list (0-based indexing). "
+            "The main task is used for:\n"
+            "- Early stopping evaluation (primary optimization target)\n"
+            "- Similarity-based weight computation in adaptive losses\n"
+            "- Primary metrics reporting in model evaluation\n\n"
+            "CRITICAL: Must align with task_label_names ordering.\n\n"
+            "Examples:\n"
+            "- task_label_names=['isFraud', 'isCCfrd', 'isDDfrd'], main_task_index=0 → 'isFraud' is main\n"
+            "- task_label_names=['isCCfrd', 'isDDfrd', 'isFraud'], main_task_index=2 → 'isFraud' is main\n"
+            "- task_label_names=['isCCfrd', 'isFraud', 'isDDfrd'], main_task_index=1 → 'isFraud' is main\n\n"
+            "Data Structure Contract:\n"
+            "- Labels passed to lightgbmmt.Dataset must have shape [N_samples, N_tasks]\n"
+            "- Column order MUST match task_label_names order exactly\n"
+            "- Loss functions use main_task_index to identify which column is the primary task\n"
+            "- No enforcement by lightgbmmt library - this is a loss function convention\n\n"
+            "Legacy Behavior: main_task_index=0 (first task is main task)"
+        ),
     )
 
     # ========================================================================
@@ -146,15 +163,36 @@ class LightGBMMtModelHyperparameters(ModelHyperparameters):
     )
 
     loss_epsilon_norm: float = Field(
-        default=1e-10,
-        gt=0,
-        description="Epsilon for safe division in normalization operations",
+        default=0.0,
+        ge=0,
+        description=(
+            "Epsilon for safe division in normalization operations (L2 norm, std, sum). "
+            "Prevents division by zero and NaN propagation in edge cases.\n\n"
+            "Default 0.0 disables epsilon protection (matches legacy behavior without normalization). "
+            "Set to small positive value (e.g., 1e-10) to enable safe normalization.\n\n"
+            "Used in:\n"
+            "- Weight L2 normalization: w / (||w|| + epsilon_norm)\n"
+            "- Gradient std normalization: (g - mean) / (std + epsilon_norm)\n"
+            "- Sum normalization: w / (sum(w) + epsilon_norm)\n\n"
+            "Recommendation: Use 0.0 unless experiencing NaN issues, then try 1e-10"
+        ),
     )
 
-    loss_clip_similarity_inverse: float = Field(
-        default=1e10,
-        gt=0,
-        description="Maximum value for inverse similarity to prevent inf (adaptive loss)",
+    loss_similarity_min_distance: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Minimum Jensen-Shannon divergence between task distributions. "
+            "Prevents zero divergence which would cause infinite task weights.\n\n"
+            "When JS divergence < min_distance, tasks are treated as identical. "
+            "Default 0.0 disables protection (matches exact legacy behavior, may produce inf).\n\n"
+            "Used in adaptive loss functions to clip JS divergence before computing reciprocal:\n"
+            "  js_div_safe = max(js_div, min_distance)\n"
+            "  weight = 1 / js_div_safe  # Now guaranteed finite if min_distance > 0\n\n"
+            "Set to small positive value (e.g., 1e-10) to enable protection against inf.\n\n"
+            "Recommendation: Use default 0.0 unless experiencing inf/NaN issues, "
+            "then set to 1e-10. Increase to 1e-8 if tasks are too similar."
+        ),
     )
 
     # Weight configuration
@@ -202,15 +240,15 @@ class LightGBMMtModelHyperparameters(ModelHyperparameters):
     )
 
     # Weight update strategy
-    loss_weight_method: Optional[Literal["tenIters", "sqrt", "delta"]] = Field(
+    loss_weight_method: Optional[Literal["tenIters", "sqrt", "delta", "ema"]] = Field(
         default=None,
-        description="Weight update strategy: None (every iteration), 'tenIters' (periodic), 'sqrt' (sqrt transform), 'delta' (incremental)",
+        description="Weight update strategy: None (every iteration), 'tenIters' (periodic), 'sqrt' (sqrt transform), 'delta' (incremental), 'ema' (exponential moving average)",
     )
 
     loss_weight_update_frequency: int = Field(
-        default=50,
+        default=10,
         ge=1,
-        description="Iterations between weight updates (used with 'tenIters' method)",
+        description="Iterations between weight updates (used with 'tenIters' method). Legacy default: 10",
     )
 
     loss_delta_lr: float = Field(
@@ -244,48 +282,42 @@ class LightGBMMtModelHyperparameters(ModelHyperparameters):
         ),
     )
 
-    loss_sqrt_normalize: bool = Field(
+    loss_normalize_gradients: bool = Field(
         default=True,
         description=(
-            "Apply L2 normalization after square root dampening when loss_weight_method='sqrt'. "
-            "Controls numerical stability vs exact legacy behavior trade-off.\n\n"
-            "Algorithm impact on sqrt method:\n"
-            "- True (default): w = normalize(sqrt(w_raw)) - Ensures weights sum to 1.0\n"
-            "- False (legacy): w = sqrt(w_raw) - No re-normalization after sqrt\n\n"
-            "When True (enhanced, default):\n"
-            "- Maintains consistent weight interpretation across iterations\n"
-            "- Prevents numerical drift over many iterations\n"
-            "- More numerically stable for long training runs\n"
-            "- sqrt dampening effect preserved, just normalized to sum=1.0\n\n"
-            "When False (exact legacy behavior):\n"
-            "- Matches original implementation exactly\n"
-            "- Weights may not sum to 1.0 after sqrt transformation\n"
-            "- Potential for gradual numerical drift\n"
-            "- Use only for exact legacy reproduction or validation\n\n"
-            "Mathematical difference:\n"
-            "- Both apply sqrt dampening: reduces extreme weight values\n"
-            "- True additionally ensures: ||w|| = 1 (L2 norm equals 1)\n"
-            "- False allows: ||w|| != 1 (weights may have different magnitudes)\n\n"
-            "Recommendation: Use True (default) for improved numerical stability. "
-            "Set False only when exact legacy behavior required for validation/migration."
+            "Apply z-score normalization to per-task gradients before weighting. "
+            "Critical for matching legacy adaptive loss behavior.\n\n"
+            "Algorithm: grad_normalized = (grad - mean) / std\n"
+            "Applied per-task before weighted aggregation.\n\n"
+            "Legacy Behavior Mapping:\n"
+            "- True (default): Matches legacy customLossNoKD and customLossKDswap behavior\n"
+            "  These adaptive weight losses normalize gradients before task weighting\n"
+            "- False: Matches legacy baseLoss behavior (fixed weights, no normalization)\n\n"
+            "When True (adaptive losses):\n"
+            "- Normalizes gradient magnitudes across tasks\n"
+            "- Prevents tasks with larger gradients from dominating\n"
+            "- Essential for fair multi-task learning with adaptive weights\n"
+            "- Stabilizes training by equalizing gradient scales\n\n"
+            "When False (fixed weights):\n"
+            "- Uses raw gradients without normalization\n"
+            "- Tasks with naturally larger gradients have more influence\n"
+            "- Simpler objective function computation\n"
+            "- Appropriate when using fixed, pre-determined task weights\n\n"
+            "Impact on Training:\n"
+            "- True: More stable, balanced task learning, slower convergence\n"
+            "- False: Faster convergence, but may be dominated by high-gradient tasks\n\n"
+            "Recommendation by Loss Type:\n"
+            "- loss_type='fixed': Set False (matches legacy baseLoss)\n"
+            "- loss_type='adaptive': Set True (matches legacy customLossNoKD)\n"
+            "- loss_type='adaptive_kd': Set True (matches legacy customLossKDswap)\n\n"
+            "Note: This is a CRITICAL parameter for reproducing legacy behavior. "
+            "Incorrect setting will cause significant training differences."
         ),
     )
 
-    # Performance optimization
-    loss_cache_predictions: bool = Field(
-        default=True,
-        description="Enable prediction caching for 30-50% performance improvement",
-    )
-
-    loss_precompute_indices: bool = Field(
-        default=True,
-        description="Precompute index arrays for faster task-specific access",
-    )
-
-    # Logging
-    loss_log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(
-        default="INFO", description="Logging level for loss function operations"
-    )
+    # Note: Prediction caching was removed due to LightGBM array reuse causing
+    # frozen weights/AUC. If performance optimization is needed in the future,
+    # implement iteration-aware cache keys: (id(preds), iteration)
 
     # ===== Derived Fields (Tier 3) =====
     _enable_kd: Optional[bool] = PrivateAttr(default=None)
@@ -365,7 +397,7 @@ class LightGBMMtModelHyperparameters(ModelHyperparameters):
             )
 
         # Validate weight_method
-        valid_methods = [None, "tenIters", "sqrt", "delta"]
+        valid_methods = [None, "tenIters", "sqrt", "delta", "ema"]
         if self.loss_weight_method not in valid_methods:
             raise ValueError(
                 f"Invalid loss_weight_method: {self.loss_weight_method}. "

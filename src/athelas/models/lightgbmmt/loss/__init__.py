@@ -9,24 +9,26 @@ from .base_loss_function import BaseLossFunction
 from .fixed_weight_loss import FixedWeightLoss
 from .adaptive_weight_loss import AdaptiveWeightLoss
 from .knowledge_distillation_loss import KnowledgeDistillationLoss
-from .weight_strategies import (
-    WeightUpdateStrategy,
-    StandardStrategy,
-    TenItersStrategy,
-    SqrtStrategy,
-    DeltaStrategy,
-)
 from .loss_factory import LossFactory
+from .weight_strategies import (
+    BaseWeightStrategy,
+    TenItersWeightStrategy,
+    SqrtWeightStrategy,
+    DeltaWeightStrategy,
+    StandardWeightStrategy,
+    WeightStrategyFactory,
+)
 
 __all__ = [
     "BaseLossFunction",
     "FixedWeightLoss",
     "AdaptiveWeightLoss",
     "KnowledgeDistillationLoss",
-    "WeightUpdateStrategy",
-    "StandardStrategy",
-    "TenItersStrategy",
-    "SqrtStrategy",
-    "DeltaStrategy",
     "LossFactory",
+    "BaseWeightStrategy",
+    "TenItersWeightStrategy",
+    "SqrtWeightStrategy",
+    "DeltaWeightStrategy",
+    "StandardWeightStrategy",
+    "WeightStrategyFactory",
 ]

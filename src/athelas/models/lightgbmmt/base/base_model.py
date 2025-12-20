@@ -286,28 +286,63 @@ class BaseMultiTaskModel(ABC):
 
     def _compute_metrics(self, data: Any, predictions: np.ndarray) -> Dict[str, float]:
         """
-        Compute evaluation metrics.
+        Compute evaluation metrics for reporting.
 
-        Default implementation uses loss function's evaluate method.
+        Matches legacy predict() behavior which computes metrics on test data.
+        Unlike legacy which prints inline, we return structured dict.
+
+        Legacy approach:
+        - During training: eval_mat stores RAW AUC values (for plotting)
+        - Post-training: predict() computes fresh metrics on test data (for evaluation)
+
+        Current implementation:
+        - During training: training_state.raw_task_auc stores RAW AUC values
+        - Post-training: _compute_metrics() computes fresh metrics (this method)
 
         Parameters
         ----------
         data : Any
-            Data with labels
+            Data with labels (Dataset format)
         predictions : np.ndarray
-            Model predictions
+            Model predictions [N*T] (raw logits from model)
 
         Returns
         -------
         metrics : dict
-            Computed metrics
+            Per-task AUC scores + mean AUC
         """
-        # Use loss function's evaluation if available
-        if hasattr(self.loss_function, "evaluate"):
-            task_scores, mean_score = self.loss_function.evaluate(predictions, data)
-            return {"mean_auc": mean_score, "per_task_auc": task_scores.tolist()}
+        from sklearn.metrics import roc_auc_score
+        from scipy.special import expit
 
-        return {}
+        # Extract labels from Dataset
+        labels = data.get_label()
+        num_tasks = self.hyperparams.num_tasks
+
+        # Reshape to matrix form
+        labels_mat = labels.reshape((num_tasks, -1)).transpose()
+
+        # Apply sigmoid and reshape predictions
+        # Model returns raw logits, need to convert to probabilities
+        preds_mat = expit(predictions.reshape((num_tasks, -1)).transpose())
+
+        # Compute per-task AUC (like legacy predict())
+        metrics = {}
+        for task_idx in range(num_tasks):
+            try:
+                auc = roc_auc_score(labels_mat[:, task_idx], preds_mat[:, task_idx])
+                metrics[f"task_{task_idx}_auc"] = float(auc)
+            except ValueError as e:
+                # Handle case where task has only one class
+                self.logger.warning(
+                    f"Task {task_idx} AUC computation failed: {e}. Setting to 0.0"
+                )
+                metrics[f"task_{task_idx}_auc"] = 0.0
+
+        # Add mean AUC (useful aggregate metric)
+        valid_aucs = [v for v in metrics.values() if v > 0.0]
+        metrics["mean_auc"] = float(np.mean(valid_aucs)) if valid_aucs else 0.0
+
+        return metrics
 
     def _finalize_training(
         self, train_metrics: Dict[str, Any], eval_metrics: Dict[str, Any]

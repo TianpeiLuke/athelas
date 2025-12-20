@@ -801,19 +801,34 @@ def identify_task_columns(
 def create_task_indices(
     train_df: pd.DataFrame, val_df: pd.DataFrame, task_columns: List[str]
 ) -> Tuple[Dict[int, np.ndarray], Dict[int, np.ndarray]]:
-    """Create task-specific indices for main task and subtasks."""
+    """
+    Create task-specific indices - matches legacy MTGBM behavior.
+
+    IMPORTANT: Returns ALL indices (not just positive class) to match legacy
+    implementation. The actual task filtering happens when extracting labels
+    from the label matrix. This ensures AUC computation has both classes.
+
+    Legacy reference: projects/pfw_lightgbmmt_legacy/dockers/mtgbm/src/model/Mtgbm.py
+    Lines 107-120 show: idx_val_dic[i] = val_labels.index (ALL indices)
+    """
     trn_sublabel_idx = {}
     val_sublabel_idx = {}
 
     for i, task_col in enumerate(task_columns):
-        trn_sublabel_idx[i] = np.where(train_df[task_col] == 1)[0]
-        val_sublabel_idx[i] = np.where(val_df[task_col] == 1)[0]
+        # Legacy uses ALL indices for each task (not just positive samples)
+        # This allows AUC computation to see both positive and negative classes
+        trn_sublabel_idx[i] = np.arange(len(train_df))
+        val_sublabel_idx[i] = np.arange(len(val_df))
 
     logger.info(f"Created indices for {len(task_columns)} tasks:")
     for i in range(len(task_columns)):
+        # Log actual class distribution for transparency
+        train_pos = train_df[task_columns[i]].sum()
+        val_pos = val_df[task_columns[i]].sum()
         logger.info(
             f"  Task {i} ({task_columns[i]}): "
-            f"train_pos={len(trn_sublabel_idx[i])}, val_pos={len(val_sublabel_idx[i])}"
+            f"train_samples={len(trn_sublabel_idx[i])} (pos={train_pos}), "
+            f"val_samples={len(val_sublabel_idx[i])} (pos={val_pos})"
         )
 
     return trn_sublabel_idx, val_sublabel_idx
@@ -1084,10 +1099,9 @@ def save_artifacts(
     """Saves trained model and all preprocessing artifacts."""
     os.makedirs(model_path, exist_ok=True)
 
-    # 1. Save LightGBM model
-    model_file = os.path.join(model_path, "lightgbmmt_model.txt")
-    model.save(model_file)
-    logger.info(f"Saved LightGBMMT model to {model_file}")
+    # 1. Save LightGBM model (pass directory, model handles filename)
+    model.save(model_path)
+    logger.info(f"Saved LightGBMMT model to {model_path}")
 
     # 2. Save risk tables
     risk_map_file = os.path.join(model_path, "risk_table_map.pkl")

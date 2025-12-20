@@ -178,6 +178,7 @@ def install_packages(packages: list, use_secure: bool = USE_SECURE_PYPI) -> None
 # NOTE: numpy is already available in SKLearn processor framework 1.2-1
 required_packages = [
     "lightgbm>=3.3.0",  # Required for LightGBMMT
+    "pydantic>=2.0.0",  # Required for TrainingState in model classes
 ]
 
 # Install packages using unified installation function
@@ -426,29 +427,78 @@ def load_hyperparameters(model_dir: str) -> Dict[str, Any]:
         raise
 
 
-def load_multitask_calibration_models(model_dir: str, num_tasks: int) -> Optional[Dict]:
+def load_multitask_calibration_models(
+    model_dir: str, hyperparams: Dict[str, Any]
+) -> Optional[Dict]:
     """
-    Load per-task calibration models.
+    Load per-task calibration models from single dictionary file.
+    Uses hyperparameters.task_label_names to ensure correct task ordering.
 
     Expected structure:
     calibration/
-      task_0_calibration_model.pkl
-      task_1_calibration_model.pkl
-      ...
+      calibration_models_dict.pkl  # Dictionary with {score_field: calibrator}
 
     Args:
         model_dir: Directory containing model artifacts
-        num_tasks: Number of tasks (from hyperparameters)
+        hyperparams: Model hyperparameters containing task_label_names
 
     Returns:
         Dictionary with 'type': 'multitask' and 'data': {task_idx: model}
         or None if no calibration models found
+
+    Raises:
+        ValueError: If calibrators don't match expected tasks
     """
     calibration_dir = os.path.join(model_dir, CALIBRATION_DIR)
     if not os.path.exists(calibration_dir):
         logger.info("No calibration directory found")
         return None
 
+    # Get authoritative task order from hyperparameters
+    task_label_names = hyperparams.get("task_label_names")
+    if not task_label_names:
+        raise ValueError("Missing 'task_label_names' in hyperparameters")
+
+    # Try loading from single dictionary file (new format)
+    dict_file = os.path.join(calibration_dir, "calibration_models_dict.pkl")
+    if os.path.exists(dict_file):
+        try:
+            with open(dict_file, "rb") as f:
+                calibrators_dict = pkl.load(f)
+
+            # Map tasks to calibrators using task names (NOT alphabetical sorting)
+            calibrators = {}
+            for task_idx, label_name in enumerate(task_label_names):
+                # Convert label name to score field name
+                # e.g., "is_abuse" → "is_abuse_prob" or "is_abuse_true" → "is_abuse_prob"
+                score_field = f"{label_name.replace('_true', '')}_prob"
+
+                if score_field not in calibrators_dict:
+                    logger.warning(
+                        f"Missing calibrator for task {task_idx}: {score_field}. "
+                        f"Available: {list(calibrators_dict.keys())}"
+                    )
+                    continue
+
+                calibrators[task_idx] = calibrators_dict[score_field]
+                logger.info(f"✓ Task {task_idx}: {label_name} → {score_field}")
+
+            if calibrators:
+                if len(calibrators) != len(task_label_names):
+                    logger.warning(
+                        f"Calibrator count mismatch: expected {len(task_label_names)}, "
+                        f"got {len(calibrators)}. Proceeding with available calibrators."
+                    )
+                logger.info(
+                    f"Loaded {len(calibrators)} calibration models from dictionary file"
+                )
+                return {"type": "multitask", "data": calibrators}
+        except Exception as e:
+            logger.warning(f"Failed to load calibration dictionary: {e}")
+
+    # Fallback: Try loading from separate files (legacy format)
+    logger.info("Dictionary file not found, trying legacy format (separate files)")
+    num_tasks = len(task_label_names)
     calibrators = {}
     for i in range(num_tasks):
         model_file = os.path.join(calibration_dir, f"task_{i}_calibration_model.pkl")
@@ -456,7 +506,7 @@ def load_multitask_calibration_models(model_dir: str, num_tasks: int) -> Optiona
             try:
                 with open(model_file, "rb") as f:
                     calibrators[i] = pkl.load(f)
-                logger.info(f"Loaded calibration model for task {i}")
+                logger.info(f"Loaded calibration model for task {i} (legacy format)")
             except Exception as e:
                 logger.warning(f"Failed to load calibration model for task {i}: {e}")
 
@@ -614,9 +664,8 @@ def model_fn(model_dir: str) -> Dict[str, Any]:
         # Create configuration
         config = create_model_config(model, feature_columns, hyperparameters)
 
-        # Load calibration models if available
-        num_tasks = config["num_tasks"]
-        calibrator = load_multitask_calibration_models(model_dir, num_tasks)
+        # Load calibration models with hyperparameters for correct task ordering
+        calibrator = load_multitask_calibration_models(model_dir, hyperparameters)
         if calibrator:
             logger.info(
                 f"Calibration models loaded for {len(calibrator['data'])} tasks"
@@ -1060,16 +1109,21 @@ def predict_fn(
             model, preprocessed_df, feature_columns
         )
 
-        # Validate output shape
-        if raw_predictions.shape[1] != num_tasks:
+        # Validate output shape matches expected task count
+        task_names = config["task_names"]
+        expected_tasks = len(task_names)
+        actual_tasks = raw_predictions.shape[1]
+
+        if actual_tasks != expected_tasks:
             raise ValueError(
-                f"Model output shape mismatch: expected {num_tasks} tasks, "
-                f"got {raw_predictions.shape[1]} outputs"
+                f"Prediction shape mismatch! Expected {expected_tasks} tasks, "
+                f"got {actual_tasks} outputs. Task names: {task_names}"
             )
 
         if logger.isEnabledFor(logging.INFO):
             logger.info(
-                f"Generated multi-task predictions: shape {raw_predictions.shape}"
+                f"✓ Predictions validated: {actual_tasks} tasks match "
+                f"{expected_tasks} task names: {task_names}"
             )
 
         # Apply calibration if available, otherwise use raw predictions
@@ -1096,6 +1150,7 @@ def predict_fn(
         return {
             "raw_predictions": raw_predictions,
             "calibrated_predictions": calibrated_predictions,
+            "task_names": task_names,  # Pass task names for output formatting
         }
 
     except Exception as e:
@@ -1198,25 +1253,30 @@ def normalize_predictions(
 def format_json_record(
     raw_probs: List[float],
     calibrated_probs: List[float],
-    main_task_index: int,
+    task_names: List[str],
 ) -> Dict[str, Any]:
     """
     Format a single multi-task prediction record for JSON output.
 
-    Reuses XGBoost multiclass format for compatibility.
+    Output structure uses task-specific field names:
+    - {task_name}_raw: Raw task probability
+    - {task_name}_calibrated: Calibrated task probability
 
-    Output structure:
-    - prob_01, prob_02, ...: Task probabilities
-    - calibrated_prob_01, calibrated_prob_02, ...: Calibrated task probabilities
-    - custom-output-label: Main task prediction (class-0 or class-1)
+    Example output for tasks ["is_abuse_true", "is_spam_true"]:
+    {
+        "is_abuse_prob_raw": "0.7234",
+        "is_abuse_prob_calibrated": "0.6891",
+        "is_spam_prob_raw": "0.3156",
+        "is_spam_prob_calibrated": "0.2943"
+    }
 
     Args:
         raw_probs: List of raw task probabilities
         calibrated_probs: List of calibrated task probabilities
-        main_task_index: Index of main task for output label
+        task_names: List of task label names (e.g., ["is_abuse_true", "is_spam_true"])
 
     Returns:
-        Dictionary containing formatted prediction record
+        Dictionary containing formatted prediction record with task-specific names
     """
     if not raw_probs:
         raise ValueError("Empty probability list")
@@ -1225,17 +1285,15 @@ def format_json_record(
     if calibrated_probs is None or len(calibrated_probs) != len(raw_probs):
         calibrated_probs = raw_probs
 
-    # Interleaved raw and calibrated probabilities
+    # Use task-specific field names
     record = {}
-    for i in range(len(raw_probs)):
-        task_prefix = str(i + 1).zfill(2)
-        record[f"prob_{task_prefix}"] = str(raw_probs[i])
-        record[f"calibrated_prob_{task_prefix}"] = str(calibrated_probs[i])
+    for i, task_label_name in enumerate(task_names):
+        # Convert label name to score field name
+        # "is_abuse" → "is_abuse_prob" or "is_abuse_true" → "is_abuse_prob"
+        score_field_name = f"{task_label_name.replace('_true', '')}_prob"
 
-    # Prediction based on MAIN TASK only (threshold at 0.5)
-    main_task_prob = raw_probs[main_task_index]
-    main_task_prediction = 1 if main_task_prob > 0.5 else 0
-    record["custom-output-label"] = f"class-{main_task_prediction}"
+        record[f"{score_field_name}_raw"] = str(raw_probs[i])
+        record[f"{score_field_name}_calibrated"] = str(calibrated_probs[i])
 
     return record
 
@@ -1243,49 +1301,36 @@ def format_json_record(
 def format_json_response(
     raw_scores_list: List[List[float]],
     calibrated_scores_list: List[List[float]],
-    main_task_index: int,
+    task_names: List[str],
 ) -> Tuple[str, str]:
     """
-    Format multi-task predictions as JSON response.
+    Format multi-task predictions as JSON response with task-specific field names.
 
     Args:
         raw_scores_list: List of raw prediction scores
         calibrated_scores_list: List of calibrated prediction scores
-        main_task_index: Index of main task
+        task_names: List of task label names
 
     Returns:
         Tuple of (JSON response string, content type)
 
-    Example Output (3 tasks, main_task_index=0):
+    Example Output for tasks ["is_abuse_true", "is_spam_true"]:
         {
           "predictions": [
             {
-              "prob_01": "0.7234",
-              "calibrated_prob_01": "0.6891",
-              "prob_02": "0.3156",
-              "calibrated_prob_02": "0.2943",
-              "prob_03": "0.8421",
-              "calibrated_prob_03": "0.8102",
-              "custom-output-label": "class-1"
-            },
-            {
-              "prob_01": "0.2156",
-              "calibrated_prob_01": "0.1987",
-              "prob_02": "0.6789",
-              "calibrated_prob_02": "0.6521",
-              "prob_03": "0.4321",
-              "calibrated_prob_03": "0.4089",
-              "custom-output-label": "class-0"
+              "is_abuse_prob_raw": "0.7234",
+              "is_abuse_prob_calibrated": "0.6891",
+              "is_spam_prob_raw": "0.3156",
+              "is_spam_prob_calibrated": "0.2943"
             }
           ]
         }
     """
     output_records = [
-        format_json_record(raw_probs, cal_probs, main_task_index)
+        format_json_record(raw_probs, cal_probs, task_names)
         for raw_probs, cal_probs in zip(raw_scores_list, calibrated_scores_list)
     ]
 
-    # Simple response format without metadata
     response = json.dumps({"predictions": output_records})
     return response, CONTENT_TYPE_JSON
 
@@ -1293,55 +1338,46 @@ def format_json_response(
 def format_csv_response(
     raw_scores_list: List[List[float]],
     calibrated_scores_list: List[List[float]],
-    main_task_index: int,
+    task_names: List[str],
 ) -> Tuple[str, str]:
     """
-    Format multi-task predictions as CSV response without headers.
+    Format multi-task predictions as CSV response with task-specific header.
 
     Args:
         raw_scores_list: List of raw prediction scores
         calibrated_scores_list: List of calibrated prediction scores
-        main_task_index: Index of main task
+        task_names: List of task label names
 
     Returns:
         Tuple of (CSV response string, content type)
 
-    Example Output (3 tasks, main_task_index=0):
-        0.7234,0.6891,0.3156,0.2943,0.8421,0.8102,class-1
-        0.2156,0.1987,0.6789,0.6521,0.4321,0.4089,class-0
-
-    Format: raw_prob_01,cal_prob_01,raw_prob_02,cal_prob_02,raw_prob_03,cal_prob_03,main_task_label
+    Example Output for tasks ["is_abuse_true", "is_spam_true"]:
+        is_abuse_prob_raw,is_abuse_prob_calibrated,is_spam_prob_raw,is_spam_prob_calibrated
+        0.7234,0.6891,0.3156,0.2943
+        0.2156,0.1987,0.6789,0.6521
     """
-    csv_lines = []
-
     # Ensure calibrated scores exist, use raw scores as fallback
     if calibrated_scores_list is None or len(calibrated_scores_list) != len(
         raw_scores_list
     ):
         calibrated_scores_list = raw_scores_list
 
-    # Multi-task - no header, interleaved raw and calibrated probabilities
-    for i, raw_probs in enumerate(raw_scores_list):
-        calibrated_probs = calibrated_scores_list[i]
-        num_tasks = len(raw_probs)
+    # Generate header with task-specific names
+    header_parts = []
+    for task_label_name in task_names:
+        score_field_name = f"{task_label_name.replace('_true', '')}_prob"
+        header_parts.append(f"{score_field_name}_raw")
+        header_parts.append(f"{score_field_name}_calibrated")
 
-        # Create interleaved raw and calibrated probabilities
+    csv_lines = [",".join(header_parts)]
+
+    # Data rows
+    for raw_probs, calibrated_probs in zip(raw_scores_list, calibrated_scores_list):
         line = []
-        for task_idx in range(num_tasks):
-            # Raw probability
-            raw_prob = round(float(raw_probs[task_idx]), 4)
-            line.append(f"{raw_prob:.4f}")
-
-            # Calibrated probability
-            cal_prob = round(float(calibrated_probs[task_idx]), 4)
-            line.append(f"{cal_prob:.4f}")
-
-        # Add main task prediction (using raw scores for prediction)
-        main_task_prob = raw_probs[main_task_index]
-        main_task_prediction = 1 if main_task_prob > 0.5 else 0
-        line.append(f"class-{main_task_prediction}")
-
-        csv_lines.append(",".join(map(str, line)))
+        for i in range(len(raw_probs)):
+            line.append(f"{raw_probs[i]:.4f}")
+            line.append(f"{calibrated_probs[i]:.4f}")
+        csv_lines.append(",".join(line))
 
     response_body = "\n".join(csv_lines) + "\n"
     return response_body, CONTENT_TYPE_CSV
@@ -1350,41 +1386,66 @@ def format_csv_response(
 def output_fn(
     prediction_output: Union[np.ndarray, List, Dict[str, np.ndarray]],
     accept: str = CONTENT_TYPE_JSON,
-    main_task_index: int = 0,
 ) -> Tuple[str, str]:
     """
-    Serializes the multi-task prediction output.
+    Serializes the multi-task prediction output with task-specific field names.
+
+    SageMaker Handler Contract: Only receives prediction_output and accept parameters.
+    Task names are extracted from the prediction_output dict (populated by predict_fn).
 
     Args:
-        prediction_output: Model predictions (raw and calibrated)
+        prediction_output: Model predictions dict with keys:
+                          - 'raw_predictions': Raw probabilities (n_samples, n_tasks)
+                          - 'calibrated_predictions': Calibrated probabilities
+                          - 'task_names': List of task label names (REQUIRED)
         accept: The requested response MIME type
-        main_task_index: Index of main task for output label
 
     Returns:
         Tuple[str, str]: (response_body, content_type)
 
     Raises:
-        ValueError: If prediction output format is invalid or content type is unsupported
+        ValueError: If prediction output format is invalid, task_names is missing,
+                   or content type is unsupported
     """
     logger.info(
         f"Received prediction output of type: {type(prediction_output)} for accept type: {accept}"
     )
 
     try:
+        # Extract task_names from prediction_output dict
+        task_names = None
+        if isinstance(prediction_output, dict) and "task_names" in prediction_output:
+            task_names = prediction_output["task_names"]
+            logger.info(f"Extracted task_names from prediction output: {task_names}")
+
+        # Validate task_names available
+        if task_names is None:
+            raise ValueError(
+                "task_names is required in prediction_output dict. "
+                "Ensure predict_fn includes 'task_names' in its return dictionary."
+            )
+
         # Normalize prediction format
         raw_scores_list, calibrated_scores_list, num_tasks = normalize_predictions(
             prediction_output
         )
 
+        # Validate task_names count matches prediction output
+        if len(task_names) != num_tasks:
+            raise ValueError(
+                f"Task name count mismatch: {len(task_names)} names provided "
+                f"for {num_tasks} tasks in predictions"
+            )
+
         # Format response based on accept type
         if accept.lower() == CONTENT_TYPE_JSON:
             return format_json_response(
-                raw_scores_list, calibrated_scores_list, main_task_index
+                raw_scores_list, calibrated_scores_list, task_names
             )
 
         elif accept.lower() == CONTENT_TYPE_CSV:
             return format_csv_response(
-                raw_scores_list, calibrated_scores_list, main_task_index
+                raw_scores_list, calibrated_scores_list, task_names
             )
 
         else:

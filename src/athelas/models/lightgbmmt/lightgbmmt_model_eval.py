@@ -1563,7 +1563,7 @@ def save_predictions(
     pred_df = pd.DataFrame({id_col: ids})
 
     for i, task_name in enumerate(task_names):
-        pred_df[f"{task_name}_true"] = y_true_tasks[i]
+        pred_df[task_name] = y_true_tasks[i]
         pred_df[f"{task_name}_prob"] = y_pred_tasks[:, i]
 
     output_base = Path(output_dir) / "eval_predictions"
@@ -1739,7 +1739,7 @@ def save_predictions_with_comparison(
     pred_df = pd.DataFrame({id_col: ids})
 
     for i, task_name in enumerate(task_names):
-        pred_df[f"{task_name}_true"] = y_true_tasks[i]
+        pred_df[task_name] = y_true_tasks[i]
         pred_df[f"{task_name}_new_prob"] = y_pred_tasks[:, i]
         pred_df[f"{task_name}_prev_prob"] = previous_scores[task_name]
         pred_df[f"{task_name}_score_diff"] = (

@@ -1,13 +1,20 @@
 """
 Base loss function for LightGBMMT multi-task learning.
 
-Provides shared functionality and defines the interface for concrete loss implementations.
+MINIMAL REFACTORING DESIGN - Preserves legacy behavior.
+
+Extracted from legacy implementations:
+- projects/pfw_lightgbmmt_legacy/dockers/mtgbm/src/lossFunction/baseLoss.py
+- projects/pfw_lightgbmmt_legacy/dockers/mtgbm/src/lossFunction/customLossNoKD.py
+- projects/pfw_lightgbmmt_legacy/dockers/mtgbm/src/lossFunction/customLossKDswap.py
+
+Philosophy: Extract ONLY code that is byte-for-byte identical across
+all three legacy implementations. Everything else preserved in subclasses.
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Tuple, Optional, TYPE_CHECKING, Any
+from typing import Optional, TYPE_CHECKING
 import numpy as np
-import logging
 from scipy.special import expit
 from sklearn.metrics import roc_auc_score
 
@@ -19,137 +26,104 @@ if TYPE_CHECKING:
 
 class BaseLossFunction(ABC):
     """
-    Abstract base class for MTGBM loss functions.
+    Minimal base class - ONLY truly shared operations.
 
-    Provides shared functionality:
-    - Data preprocessing (sigmoid, clipping, reshaping)
-    - Utility methods (normalization, gradient computation)
-    - Input validation
-    - Caching mechanisms
-    - Logging infrastructure
+    Provides:
+    - grad() - Binary cross-entropy gradient (IDENTICAL in all legacy)
+    - hess() - Binary cross-entropy hessian (IDENTICAL in all legacy)
+    - _preprocess_labels() - Reshape operation (IDENTICAL in all legacy)
+    - _preprocess_predictions() - Sigmoid + clip + reshape (IDENTICAL in all legacy)
+    - _compute_auc() - Core AUC calculation loop (IDENTICAL in all legacy)
 
-    Design Pattern: Template Method + Strategy
+    Does NOT provide:
+    - normalize() - Only in adaptive losses, not in baseLoss
+    - unit_scale() - Only in adaptive losses, not in baseLoss
+    - Weight computation - Different per loss type
+    - Gradient aggregation - Different per loss type
+    - Validation or logging - Legacy has none
     """
 
     def __init__(
         self,
-        num_label: int,
-        val_sublabel_idx: Dict[int, np.ndarray],
-        trn_sublabel_idx: Optional[Dict[int, np.ndarray]] = None,
+        num_label,
+        val_sublabel_idx,
+        trn_sublabel_idx=None,
         hyperparams: Optional["LightGBMMtModelHyperparameters"] = None,
     ):
         """
-        Initialize base loss function.
+        Minimal initialization - common to all legacy classes.
 
         Parameters
         ----------
         num_label : int
-            Total number of tasks (main + subtasks)
+            Number of tasks
         val_sublabel_idx : dict
             Validation set indices for each task {task_id: np.ndarray}
         trn_sublabel_idx : dict, optional
             Training set indices for each task
         hyperparams : LightGBMMtModelHyperparameters, optional
-            Model hyperparameters containing loss parameters
+            Model hyperparameters for configurable constants
         """
-        # Validate inputs
-        if num_label < 2:
-            raise ValueError(f"num_label must be >= 2, got {num_label}")
-
-        if not val_sublabel_idx:
-            raise ValueError("val_sublabel_idx cannot be empty")
-
-        if hyperparams is None:
-            raise ValueError("hyperparams is required")
-
-        # Initialize attributes
         self.num_col = num_label
-        self.val_sublabel_idx = val_sublabel_idx
-        self.trn_sublabel_idx = trn_sublabel_idx or {}
+        self.val_label_idx = val_sublabel_idx
+        self.trn_sublabel_idx = trn_sublabel_idx
+        self.eval_mat = []
         self.hyperparams = hyperparams
 
-        # Extract loss parameters from hyperparams
-        self.epsilon = hyperparams.loss_epsilon
-        self.epsilon_norm = hyperparams.loss_epsilon_norm
-        self.clip_similarity_inverse = hyperparams.loss_clip_similarity_inverse
-        self.beta = hyperparams.loss_beta
-        self.main_task_weight = hyperparams.loss_main_task_weight
-        self.weight_lr = hyperparams.loss_weight_lr
-        self.patience = hyperparams.loss_patience
-        self.enable_kd = hyperparams.enable_kd
-        self.weight_method = hyperparams.loss_weight_method
-        self.weight_update_frequency = hyperparams.loss_weight_update_frequency
-        self.delta_lr = hyperparams.loss_delta_lr
-        self.cache_predictions = hyperparams.loss_cache_predictions
-        self.precompute_indices = hyperparams.loss_precompute_indices
-        self.log_level = hyperparams.loss_log_level
+        # Store last computed raw AUC scores for callback access
+        self.last_raw_scores = None
 
-        # Setup caching if enabled
-        self._pred_cache: Dict[int, np.ndarray] = {} if self.cache_predictions else {}
-        self._label_cache: Dict[int, np.ndarray] = {} if self.cache_predictions else {}
-
-        # Setup logging
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self.logger.setLevel(self.log_level)
-
-        self.logger.info(
-            f"Initialized {self.__class__.__name__} with {num_label} tasks"
-        )
-
-    def _preprocess_predictions(
-        self, preds: np.ndarray, num_col: int, epsilon: Optional[float] = None
-    ) -> np.ndarray:
+    def grad(self, y_true, y_pred):
         """
-        Transform and clip predictions with caching.
+        Binary cross-entropy gradient.
+
+        LEGACY: Identical in baseLoss.py, customLossNoKD.py, customLossKDswap.py
+        Formula: grad = y_pred - y_true
 
         Parameters
         ----------
-        preds : np.ndarray
-            Raw predictions from model
-        num_col : int
-            Number of tasks
-        epsilon : float, optional
-            Clipping constant (uses self.epsilon if None)
+        y_true : np.ndarray
+            True labels [N_samples, N_tasks]
+        y_pred : np.ndarray
+            Predictions [N_samples, N_tasks]
 
         Returns
         -------
-        preds_mat : np.ndarray
-            Preprocessed predictions [N_samples, N_tasks]
+        grad : np.ndarray
+            Gradients [N_samples, N_tasks]
         """
-        # Check cache
-        cache_key = id(preds)
-        if self.cache_predictions and cache_key in self._pred_cache:
-            return self._pred_cache[cache_key]
+        return y_pred - y_true
 
-        # Reshape from flattened [T*N] to matrix [N, T]
-        # LightGBM flattens as: transpose then reshape
-        # So we reverse: reshape to [T, N] then transpose to [N, T]
-        preds_mat = preds.reshape((num_col, -1)).transpose()
-
-        # Apply sigmoid
-        preds_mat = expit(preds_mat)
-
-        # Clip for numerical stability
-        eps = epsilon if epsilon is not None else self.epsilon
-        preds_mat = np.clip(preds_mat, eps, 1 - eps)
-
-        # Cache result
-        if self.cache_predictions:
-            self._pred_cache[cache_key] = preds_mat
-
-        return preds_mat
-
-    def _preprocess_labels(self, train_data: Any, num_col: int) -> np.ndarray:
+    def hess(self, y_pred):
         """
-        Reshape label matrix with validation.
+        Binary cross-entropy hessian.
 
-        Retrieves multi-task labels directly from Dataset.get_label().
-        The Dataset is created with label=y_train (2D array) in MtgbmModel._prepare_data().
+        LEGACY: Identical in baseLoss.py, customLossNoKD.py, customLossKDswap.py
+        Formula: hess = y_pred * (1 - y_pred)
+
+        Parameters
+        ----------
+        y_pred : np.ndarray
+            Predictions [N_samples, N_tasks]
+
+        Returns
+        -------
+        hess : np.ndarray
+            Hessians [N_samples, N_tasks]
+        """
+        return y_pred * (1.0 - y_pred)
+
+    def _preprocess_labels(self, train_data, num_col):
+        """
+        Reshape labels to matrix form.
+
+        LEGACY: Identical in all three implementations
+        Transform: labels [N*T] → labels_mat [N, T]
 
         Parameters
         ----------
         train_data : lightgbm.Dataset
-            Training dataset containing multi-task labels
+            Training dataset
         num_col : int
             Number of tasks
 
@@ -158,136 +132,140 @@ class BaseLossFunction(ABC):
         labels_mat : np.ndarray
             Reshaped labels [N_samples, N_tasks]
         """
-        # Check cache
-        cache_key = id(train_data)
-        if self.cache_predictions and cache_key in self._label_cache:
-            return self._label_cache[cache_key]
-
-        # Get multi-task labels directly from Dataset
-        # Dataset stores the 2D label array passed during creation
         labels = train_data.get_label()
-
-        # Reshape from flattened [T*N] to matrix [N, T]
-        # LightGBM flattens as: transpose then reshape
-        # So we reverse: reshape to [T, N] then transpose to [N, T]
         labels_mat = labels.reshape((num_col, -1)).transpose()
-
-        # Validate
-        if labels_mat.shape[1] != num_col:
-            raise ValueError(f"Expected {num_col} tasks, got {labels_mat.shape[1]}")
-
-        # Cache result
-        if self.cache_predictions:
-            self._label_cache[cache_key] = labels_mat
-
         return labels_mat
 
-    def normalize(self, vec: np.ndarray, epsilon: Optional[float] = None) -> np.ndarray:
-        """Standard normalization with NaN protection."""
-        eps = epsilon if epsilon is not None else self.epsilon_norm
-        total = vec.sum()
-        if total < eps:
-            return np.ones_like(vec) / len(vec)
-        return vec / total
-
-    def unit_scale(
-        self, vec: np.ndarray, epsilon: Optional[float] = None
-    ) -> np.ndarray:
-        """L2 normalization with zero-norm protection."""
-        eps = epsilon if epsilon is not None else self.epsilon_norm
-        norm = np.linalg.norm(vec)
-        if norm < eps:
-            return np.ones_like(vec) / np.sqrt(len(vec))
-        return vec / norm
-
-    def grad(self, y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
-        """Calculate gradients for binary cross-entropy."""
-        return y_pred - y_true
-
-    def hess(self, y_pred: np.ndarray) -> np.ndarray:
-        """Calculate hessians for binary cross-entropy."""
-        return y_pred * (1.0 - y_pred)
-
-    def evaluate(self, preds: np.ndarray, train_data: Any) -> Tuple[np.ndarray, float]:
+    def _preprocess_predictions(self, preds, num_col, epsilon=1e-15):
         """
-        Standard evaluation function (per-task AUC).
+        Transform and clip predictions.
 
-        Returns
-        -------
-        task_scores : np.ndarray
-            Per-task AUC scores
-        mean_score : float
-            Mean AUC across all tasks
-        """
-        # Preprocess
-        labels_mat = self._preprocess_labels(train_data, self.num_col)
-        preds_mat = self._preprocess_predictions(preds, self.num_col)
+        LEGACY: Identical in all three implementations
+        Steps:
+        1. Reshape: [N*T] → [T, N] → [N, T]
+        2. Sigmoid: logits → probabilities
+        3. Clip: [epsilon, 1-epsilon]
 
-        # Compute per-task AUC
-        task_scores = np.zeros(self.num_col)
-        for i in range(self.num_col):
-            try:
-                task_scores[i] = roc_auc_score(labels_mat[:, i], preds_mat[:, i])
-            except ValueError:
-                # Handle case where only one class present
-                task_scores[i] = 0.5
-
-        return task_scores, task_scores.mean()
-
-    def clear_cache(self) -> None:
-        """Clear prediction and label caches."""
-        if self.cache_predictions:
-            self._pred_cache.clear()
-            self._label_cache.clear()
-
-    @abstractmethod
-    def compute_weights(
-        self, labels_mat: np.ndarray, preds_mat: np.ndarray, iteration: int
-    ) -> np.ndarray:
-        """
-        Compute task weights - must be implemented by subclasses.
-
-        Parameters
-        ----------
-        labels_mat : np.ndarray
-            Label matrix [N_samples, N_tasks]
-        preds_mat : np.ndarray
-            Prediction matrix [N_samples, N_tasks]
-        iteration : int
-            Current iteration number
-
-        Returns
-        -------
-        weights : np.ndarray
-            Task weights [N_tasks]
-        """
-        pass
-
-    @abstractmethod
-    def objective(
-        self, preds: np.ndarray, train_data: Any, ep: Optional[float] = None
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Objective function - must be implemented by subclasses.
+        Note: epsilon=1e-15 hardcoded in legacy
 
         Parameters
         ----------
         preds : np.ndarray
-            Raw predictions from model
+            Raw predictions [N*T]
+        num_col : int
+            Number of tasks
+        epsilon : float, optional
+            Clipping constant (default: 1e-15, legacy value)
+
+        Returns
+        -------
+        preds_mat : np.ndarray
+            Preprocessed predictions [N_samples, N_tasks]
+        """
+        preds_mat = preds.reshape((num_col, -1)).transpose()
+        preds_mat = expit(preds_mat)
+        preds_mat = np.clip(preds_mat, epsilon, 1 - epsilon)
+        return preds_mat
+
+    def _compute_auc(self, labels_mat, preds_mat):
+        """
+        Compute per-task AUC scores with robust error handling.
+
+        LEGACY: Core loop identical in all three implementations
+        Uses validation indices to filter samples per task.
+
+        Handles edge case where validation subset has only one class
+        (can occur during early iterations with highly imbalanced tasks).
+
+        Parameters
+        ----------
+        labels_mat : np.ndarray
+            Labels [N_samples, N_tasks]
+        preds_mat : np.ndarray
+            Predictions [N_samples, N_tasks]
+
+        Returns
+        -------
+        curr_score : np.ndarray
+            Per-task AUC scores [N_tasks]
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        curr_score = []
+        for j in range(self.num_col):
+            try:
+                s = roc_auc_score(
+                    labels_mat[self.val_label_idx[j], j],
+                    preds_mat[self.val_label_idx[j], j],
+                )
+                curr_score.append(s)
+            except ValueError as e:
+                if "Only one class present" in str(e):
+                    # Single class in validation subset - use 0.5 (undefined AUC)
+                    # This is common during early iterations with imbalanced tasks
+                    subset_size = len(self.val_label_idx[j])
+                    unique_classes = np.unique(labels_mat[self.val_label_idx[j], j])
+
+                    logger.warning(
+                        f"Task {j}: Only one class ({unique_classes[0]}) "
+                        f"in validation subset (n={subset_size}). "
+                        f"Setting AUC to 0.5 (undefined)."
+                    )
+
+                    curr_score.append(0.5)
+                else:
+                    # Re-raise other ValueErrors
+                    raise
+        return np.array(curr_score)
+
+    @abstractmethod
+    def objective(self, preds, train_data, ep=None):
+        """
+        Objective function - subclasses implement with legacy logic.
+
+        Parameters
+        ----------
+        preds : np.ndarray
+            Raw predictions
         train_data : lightgbm.Dataset
             Training dataset
         ep : float, optional
-            Override epsilon value
+            Epsilon parameter (legacy)
 
         Returns
         -------
         grad : np.ndarray
-            Aggregated gradients [N_samples]
+            Aggregated gradients
         hess : np.ndarray
-            Aggregated hessians [N_samples]
+            Aggregated hessians
         grad_i : np.ndarray
-            Per-task gradients [N_samples, N_tasks]
+            Per-task gradients
         hess_i : np.ndarray
-            Per-task hessians [N_samples, N_tasks]
+            Per-task hessians
+        """
+        pass
+
+    @abstractmethod
+    def evaluate(self, preds, train_data):
+        """
+        Evaluation function - subclasses implement with legacy logic.
+
+        Parameters
+        ----------
+        preds : np.ndarray
+            Raw predictions
+        train_data : lightgbm.Dataset
+            Training dataset
+
+        Returns
+        -------
+        metric_name : str
+            Name of metric
+        metric_value : float
+            Metric value (negative for early stopping)
+        is_higher_better : bool
+            Whether higher is better
         """
         pass
