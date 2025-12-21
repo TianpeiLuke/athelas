@@ -77,8 +77,8 @@ Model Architecture Designs
 - [XGBoost Semi-Supervised Learning Pipeline Design](../1_design/xgboost_semi_supervised_learning_pipeline_design.md)
 
 **Related Analysis:**
-- [XGBoost Inference Latency Analysis](../4_analysis/xgboost_inference_latency_analysis.md)
-- [XGBoost Inference Latency Optimization Analysis](../4_analysis/2025-11-20_xgboost_inference_latency_optimization_analysis.md)
+- [XGBoost Inference Latency Analysis](../3_analysis/xgboost_inference_latency_analysis.md)
+- [XGBoost Inference Latency Optimization Analysis](../3_analysis/2025-11-20_xgboost_inference_latency_optimization_analysis.md)
 
 **Key Features:**
 - Gradient boosting decision trees
@@ -279,10 +279,10 @@ Model Architecture Designs
 - [TSA Lightning Refactoring Design](../1_design/tsa_lightning_refactoring_design.md) - **NEW** - Algorithm-preserving refactoring plan and implementation status
 
 **Related Analysis:**
-- [Temporal Self-Attention Scripts Analysis](../4_analysis/temporal_self_attention_scripts_analysis.md) - Comprehensive TSA implementation analysis
-- [TSA Cursus Step Equivalency Analysis](../4_analysis/2025-10-20_tsa_cursus_step_equivalency_analysis.md) - TSA pipeline vs Cursus framework comparison
-- [TSA SageMaker Pipeline DAG Analysis](../4_analysis/2025-10-20_tsa_sagemaker_pipeline_dag_analysis.md) - TSA pipeline DAG structure and execution
-- [TSA Lightning Refactoring Line-by-Line Comparison](../4_analysis/2025-12-20_tsa_lightning_refactoring_line_by_line_comparison.md) - **NEW** - Comprehensive line-by-line comparison of legacy vs refactored implementations
+- [Temporal Self-Attention Scripts Analysis](../3_analysis/temporal_self_attention_scripts_analysis.md) - Comprehensive TSA implementation analysis
+- [TSA Cursus Step Equivalency Analysis](../3_analysis/2025-10-20_tsa_cursus_step_equivalency_analysis.md) - TSA pipeline vs Cursus framework comparison
+- [TSA SageMaker Pipeline DAG Analysis](../3_analysis/2025-10-20_tsa_sagemaker_pipeline_dag_analysis.md) - TSA pipeline DAG structure and execution
+- [TSA Lightning Refactoring Line-by-Line Comparison](../3_analysis/2025-12-20_tsa_lightning_refactoring_line_by_line_comparison.md) - **NEW** - Comprehensive line-by-line comparison of legacy vs refactored implementations
 
 **Key Features:**
 - Temporal attention mechanisms
@@ -413,9 +413,9 @@ Model Architecture Designs
 ### 8.1 Inference Optimization
 
 **Related Analysis:**
-- [XGBoost Inference Latency Analysis](../4_analysis/xgboost_inference_latency_analysis.md)
-- [XGBoost Inference Latency Optimization Analysis](../4_analysis/2025-11-20_xgboost_inference_latency_optimization_analysis.md)
-- [Processor Optimization Summary](../4_analysis/processor_optimization_summary.md)
+- [XGBoost Inference Latency Analysis](../3_analysis/xgboost_inference_latency_analysis.md)
+- [XGBoost Inference Latency Optimization Analysis](../3_analysis/2025-11-20_xgboost_inference_latency_optimization_analysis.md)
+- [Processor Optimization Summary](../3_analysis/processor_optimization_summary.md)
 
 **Related Implementation Plans:**
 - [Inference Latency Optimization Implementation Plan](../2_project_planning/2025-11-20_inference_latency_optimization_implementation_plan.md)
@@ -706,6 +706,6 @@ When adding a new model architecture:
 1. Create design document in `slipbox/1_design/`
 2. Add implementation in appropriate `projects/` directory
 3. Update this index with links and descriptions
-4. Add analysis documents to `slipbox/4_analysis/` if applicable
+4. Add analysis documents to `slipbox/3_analysis/` if applicable
 5. Create implementation plan in `slipbox/2_project_planning/` if needed
 6. Update related entry points for cross-referencing
