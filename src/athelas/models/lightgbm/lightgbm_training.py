@@ -166,13 +166,15 @@ def install_packages(packages: list, use_secure: bool = USE_SECURE_PYPI) -> None
 # ============================================================================
 
 # Define required packages for this script
+# Note: SageMaker PyTorch 2.1.2 containers pre-install: scikit-learn, pandas, matplotlib, seaborn
+# Including them here is safe (pip will skip if already satisfied)
 required_packages = [
-    "scikit-learn>=0.23.2,<1.0.0",
-    "pandas>=1.2.0,<2.0.0",
-    "beautifulsoup4>=4.9.3",
-    "pyarrow>=4.0.0,<6.0.0",
-    "pydantic>=2.0.0,<3.0.0",
-    "typing-extensions>=4.2.0",
+    "lightgbm>=3.3.0,<4.0.0",  # LightGBM - NOT pre-installed
+    "beautifulsoup4>=4.9.3",  # HTML parsing - NOT pre-installed
+    "pyarrow>=4.0.0,<6.0.0",  # Parquet support - NOT pre-installed
+    "pydantic>=2.0.0,<3.0.0",  # Config validation - NOT pre-installed
+    "matplotlib>=3.3.0,<3.7.0",  # Plotting - pre-installed but version may differ
+    "typing-extensions>=4.2.0",  # Type hints - pre-installed but safe to include
 ]
 
 # Install packages using unified installation function
@@ -190,7 +192,7 @@ from typing import Dict, List, Any, Optional, Union, Tuple
 import pandas as pd
 import numpy as np
 import pickle as pkl
-import xgboost as xgb
+import lightgbm as lgb  # Import LightGBM instead of XGBoost
 
 import tarfile
 import matplotlib.pyplot as plt
@@ -263,14 +265,14 @@ def load_selected_features(fs_artifacts_path: str) -> Optional[List[str]]:
 
 
 def get_effective_feature_columns(
-    config: dict, input_paths: Dict[str, str], train_df: pd.DataFrame
+    config: dict, model_artifacts_dir: Optional[str], train_df: pd.DataFrame
 ) -> Tuple[List[str], bool]:
     """
     Get feature columns with fallback-first approach.
 
     Args:
         config: Configuration dictionary
-        input_paths: Dictionary of input paths
+        model_artifacts_dir: Path to model artifacts directory
         train_df: Training dataframe for validation
 
     Returns:
@@ -283,7 +285,7 @@ def get_effective_feature_columns(
     logger.info(f"Original configuration features: {len(original_features)}")
 
     # STEP 2: Check if feature selection artifacts exist
-    fs_artifacts_path = detect_feature_selection_artifacts(input_paths)
+    fs_artifacts_path = detect_feature_selection_artifacts(model_artifacts_dir)
     if fs_artifacts_path is None:
         # NO FEATURE SELECTION - Original behavior exactly
         logger.info(
@@ -333,116 +335,12 @@ def get_effective_feature_columns(
 
 
 # -------------------------------------------------------------------------
-# Field Type Conversion Functions
-# -------------------------------------------------------------------------
-
-
-def convert_numerical_fields_to_numeric(
-    df: pd.DataFrame, num_fields: List[str], dataset_name: str = "dataset"
-) -> pd.DataFrame:
-    """
-    Convert numerical fields from object dtype to float64.
-
-    This handles string-formatted numbers commonly found in CSV/Parquet files.
-    Invalid values are converted to NaN and handled by subsequent imputation.
-
-    Args:
-        df: Input dataframe
-        num_fields: List of numerical field names from config
-        dataset_name: Name of dataset for logging
-
-    Returns:
-        DataFrame with converted numerical columns
-
-    Raises:
-        ValueError: If field not found in dataframe
-    """
-    df_converted = df.copy()
-    converted_count = 0
-
-    for field in num_fields:
-        if field not in df_converted.columns:
-            raise ValueError(
-                f"Numerical field '{field}' not found in {dataset_name} dataframe"
-            )
-
-        # Check if field needs conversion (is object dtype)
-        if df_converted[field].dtype == "object":
-            logger.info(
-                f"  Converting {field} from object to numeric (invalid → NaN)..."
-            )
-            df_converted[field] = pd.to_numeric(
-                df_converted[field],
-                errors="coerce",  # Invalid values become NaN
-            )
-            converted_count += 1
-
-    if converted_count > 0:
-        logger.info(
-            f"✓ Converted {converted_count}/{len(num_fields)} fields from object to numeric in {dataset_name}"
-        )
-    else:
-        logger.info(
-            f"✓ All numerical fields already have correct dtype in {dataset_name}"
-        )
-
-    return df_converted
-
-
-def validate_categorical_fields(
-    df: pd.DataFrame, cat_fields: List[str], dataset_name: str = "dataset"
-) -> None:
-    """
-    Strictly validate categorical fields before risk table mapping.
-
-    Args:
-        df: Input dataframe
-        cat_fields: List of categorical field names from config
-        dataset_name: Name of dataset for error messages (e.g., "train", "val", "test")
-
-    Raises:
-        ValueError: If field not found in dataframe
-        TypeError: If field has wrong type with specific field names
-    """
-    mismatched_fields = []
-
-    for field in cat_fields:
-        if field not in df.columns:
-            raise ValueError(
-                f"Categorical field '{field}' not found in {dataset_name} dataframe"
-            )
-
-        dtype = df[field].dtype
-        # Allow: object, category, string types
-        if dtype not in [
-            "object",
-            "category",
-            "string",
-        ] and not pd.api.types.is_string_dtype(df[field]):
-            mismatched_fields.append(
-                {
-                    "field": field,
-                    "current_type": str(dtype),
-                    "expected_type": "categorical (object/string/category)",
-                }
-            )
-
-    if mismatched_fields:
-        error_msg = f"Categorical field type validation failed for {dataset_name}:\n"
-        for info in mismatched_fields:
-            error_msg += (
-                f"  - Field '{info['field']}': "
-                f"expected {info['expected_type']}, "
-                f"but got {info['current_type']}\n"
-            )
-        error_msg += "\nCategorical fields must have object, string, or category dtype before risk table mapping."
-        raise TypeError(error_msg)
-
-
-# -------------------------------------------------------------------------
-# Risk Table Mapping Integration Functions
+# Assuming the processor is in a directory that can be imported
 # -------------------------------------------------------------------------
 from processing.categorical.risk_table_processor import RiskTableMappingProcessor
+from processing.categorical.dictionary_encoding_processor import (
+    DictionaryEncodingProcessor,
+)
 from processing.numerical.numerical_imputation_processor import (
     NumericalVariableImputationProcessor,
 )
@@ -451,7 +349,7 @@ from processing.numerical.numerical_imputation_processor import (
 # -------------------------------------------------------------------------
 # Logging setup - Updated for CloudWatch compatibility
 # -------------------------------------------------------------------------
-def setup_logging():
+def setup_logging() -> logging.Logger:
     """Configure logging for CloudWatch compatibility"""
     # Remove any existing handlers
     root = logging.getLogger()
@@ -489,12 +387,12 @@ logger = setup_logging()
 # Pydantic V2 model for all hyperparameters
 # -------------------------------------------------------------------------
 from pydantic import BaseModel, Field, model_validator
-from hyperparams.hyperparameters_xgboost import XGBoostModelHyperparameters
+from hyperparams.hyperparameters_lightgbm import LightGBMModelHyperparameters
 
 
-class XGBoostConfig(XGBoostModelHyperparameters):
+class LightGBMConfig(LightGBMModelHyperparameters):
     """
-    Load everything from your pipeline’s XGBoostModelHyperparameters,
+    Load everything from your pipeline's LightGBMModelHyperparameters,
     plus the two risk-table params this script needs.
     """
 
@@ -751,88 +649,147 @@ def fit_and_apply_risk_tables(
     )
 
 
-def prepare_dmatrices(
+def prepare_datasets(
     config: dict, train_df: pd.DataFrame, val_df: pd.DataFrame
-) -> Tuple[xgb.DMatrix, xgb.DMatrix, List[str]]:
+) -> Tuple[lgb.Dataset, lgb.Dataset, List[str]]:
     """
-    Prepares XGBoost DMatrix objects from dataframes.
+    Prepares LightGBM Dataset objects from dataframes.
 
     Returns:
         Tuple containing:
-        - Training DMatrix
-        - Validation DMatrix
+        - Training Dataset
+        - Validation Dataset
         - List of feature columns in the exact order used for the model
     """
     # Maintain exact ordering of features as they'll be used in the model
     feature_columns = config["tab_field_list"] + config["cat_field_list"]
 
-    # Check for any remaining NaN/inf values
-    X_train = train_df[feature_columns].astype(float)
-    X_val = val_df[feature_columns].astype(float)
+    # Prepare data matrices with proper typing
+    X_train = train_df[feature_columns].copy()
+    X_val = val_df[feature_columns].copy()
 
-    if X_train.isna().any().any() or np.isinf(X_train).any().any():
+    # Check if using native categorical features
+    use_native_cat = config.get("use_native_categorical", True)
+
+    if use_native_cat:
+        # Ensure numerical features are float and categorical features are int
+        for col in config["tab_field_list"]:
+            X_train[col] = X_train[col].astype("float32")
+            X_val[col] = X_val[col].astype("float32")
+
+        for col in config["cat_field_list"]:
+            X_train[col] = X_train[col].astype("int32")
+            X_val[col] = X_val[col].astype("int32")
+    else:
+        # Risk table mode - all features are float
+        X_train = X_train.astype("float32")
+        X_val = X_val.astype("float32")
+
+    # Check for any remaining NaN/inf values
+    if X_train.isna().any().any() or np.isinf(X_train.values).any():
         raise ValueError("Training data contains NaN or inf values after preprocessing")
-    if X_val.isna().any().any() or np.isinf(X_val).any().any():
+    if X_val.isna().any().any() or np.isinf(X_val.values).any():
         raise ValueError(
             "Validation data contains NaN or inf values after preprocessing"
         )
 
-    dtrain = xgb.DMatrix(
-        X_train.values, label=train_df[config["label_name"]].astype(int).values
+    # Get labels
+    y_train = train_df[config["label_name"]].astype(int).values
+    y_val = val_df[config["label_name"]].astype(int).values
+
+    # Handle class weights for multiclass - create sample weights if needed
+    sample_weights_train = None
+    if not config.get("is_binary", True) and "class_weights" in config:
+        sample_weights_train = np.ones(len(y_train))
+        for i, weight in enumerate(config["class_weights"]):
+            sample_weights_train[y_train == i] = weight
+
+    # Specify categorical features for LightGBM if using native categorical
+    categorical_feature = config["cat_field_list"] if use_native_cat else None
+
+    if categorical_feature:
+        logger.info(
+            f"Specifying categorical features for LightGBM: {categorical_feature}"
+        )
+
+    # Create LightGBM Datasets
+    train_set = lgb.Dataset(
+        X_train.values,
+        label=y_train,
+        weight=sample_weights_train,  # Set weight during creation for multiclass
+        feature_name=feature_columns,
+        categorical_feature=categorical_feature,  # Specify categorical features
+        free_raw_data=False,
     )
-    dval = xgb.DMatrix(
-        X_val.values, label=val_df[config["label_name"]].astype(int).values
+
+    val_set = lgb.Dataset(
+        X_val.values,
+        label=y_val,
+        feature_name=feature_columns,
+        categorical_feature=categorical_feature,  # Specify categorical features
+        reference=train_set,  # Reference to training set for consistency
+        free_raw_data=False,
     )
 
-    # Set feature names in DMatrix to ensure they're preserved
-    dtrain.feature_names = feature_columns
-    dval.feature_names = feature_columns
-
-    return dtrain, dval, feature_columns
+    return train_set, val_set, feature_columns
 
 
-def train_model(config: dict, dtrain: xgb.DMatrix, dval: xgb.DMatrix) -> xgb.Booster:
+def train_model(
+    config: dict, train_set: lgb.Dataset, val_set: lgb.Dataset
+) -> lgb.Booster:
     """
-    Trains the XGBoost model.
+    Trains the LightGBM model.
 
     Args:
         config: Configuration dictionary containing model parameters
-        dtrain: Training data as XGBoost DMatrix
-        dval: Validation data as XGBoost DMatrix
+        train_set: Training data as LightGBM Dataset
+        val_set: Validation data as LightGBM Dataset
 
     Returns:
-        Trained XGBoost model
+        Trained LightGBM model
     """
-    # Base parameters
-    xgb_params = {
-        "eta": config.get("eta", 0.1),
-        "gamma": config.get("gamma", 0),
+    # Map XGBoost parameters to LightGBM equivalents
+    lgb_params = {
+        "learning_rate": config.get("eta", 0.1),
+        "min_split_gain": config.get("gamma", 0),
         "max_depth": config.get("max_depth", 6),
-        "subsample": config.get("subsample", 1),
-        "colsample_bytree": config.get("colsample_bytree", 1),
-        "lambda": config.get("lambda_xgb", 1),
-        "alpha": config.get("alpha_xgb", 0),
+        "bagging_fraction": config.get("subsample", 1),
+        "feature_fraction": config.get("colsample_bytree", 1),
+        "lambda_l2": config.get("lambda_xgb", 1),
+        "lambda_l1": config.get("alpha_xgb", 0),
+        "bagging_freq": 1 if config.get("subsample", 1) < 1 else 0,
+        "verbose": -1,
     }
 
-    # Set objective and num_class based on hyperparameters
-    # Handle class weights
+    # Add categorical feature parameters if using native categorical
+    use_native_cat = config.get("use_native_categorical", True)
+    if use_native_cat:
+        lgb_params["min_data_per_group"] = config.get("min_data_per_group", 100)
+        lgb_params["cat_smooth"] = config.get("cat_smooth", 10.0)
+        lgb_params["max_cat_threshold"] = config.get("max_cat_threshold", 32)
+        logger.info(
+            f"Added categorical parameters: min_data_per_group={lgb_params['min_data_per_group']}, "
+            f"cat_smooth={lgb_params['cat_smooth']}, max_cat_threshold={lgb_params['max_cat_threshold']}"
+        )
+
+    # Set objective and handle class weights
     if config.get("is_binary", True):
-        xgb_params["objective"] = "binary:logistic"
+        lgb_params["objective"] = "binary"
         if "class_weights" in config and len(config["class_weights"]) == 2:
             # For binary classification, use scale_pos_weight
-            xgb_params["scale_pos_weight"] = (
+            lgb_params["scale_pos_weight"] = (
                 config["class_weights"][1] / config["class_weights"][0]
             )
     else:
-        xgb_params["objective"] = "multi:softprob"
-        xgb_params["num_class"] = config["num_classes"]
+        lgb_params["objective"] = "multiclass"
+        lgb_params["num_class"] = config["num_classes"]
 
-    logger.info(f"Starting XGBoost training with params: {xgb_params}")
+    logger.info(f"Starting LightGBM training with params: {lgb_params}")
     logger.info(f"Number of classes from config: {config.get('num_classes', 2)}")
 
     # Print label distribution for debugging
-    y_train = dtrain.get_label()
-    y_val = dval.get_label()
+    y_train = train_set.get_label()
+    y_val = val_set.get_label()
     logger.info(
         f"Label distribution in training data: {pd.Series(y_train).value_counts().sort_index()}"
     )
@@ -840,65 +797,110 @@ def train_model(config: dict, dtrain: xgb.DMatrix, dval: xgb.DMatrix) -> xgb.Boo
         f"Label distribution in validation data: {pd.Series(y_val).value_counts().sort_index()}"
     )
 
-    # Handle class weights for multiclass
-    if not config.get("is_binary", True) and "class_weights" in config:
-        sample_weights = np.ones(len(y_train))
-        for i, weight in enumerate(config["class_weights"]):
-            sample_weights[y_train == i] = weight
-        dtrain.set_weight(sample_weights)
+    # Note: Class weights for multiclass are already handled in prepare_datasets via weight parameter
 
-    return xgb.train(
-        params=xgb_params,
-        dtrain=dtrain,
+    # Create callbacks for training
+    callbacks = [lgb.log_evaluation(period=1)]
+
+    # Add early stopping if configured
+    if config.get("early_stopping_rounds"):
+        callbacks.append(
+            lgb.early_stopping(stopping_rounds=config.get("early_stopping_rounds", 10))
+        )
+
+    return lgb.train(
+        params=lgb_params,
+        train_set=train_set,
         num_boost_round=config.get("num_round", 100),
-        evals=[(dtrain, "train"), (dval, "val")],
-        early_stopping_rounds=config.get("early_stopping_rounds", 10),
-        verbose_eval=True,
+        valid_sets=[train_set, val_set],
+        valid_names=["train", "val"],
+        callbacks=callbacks,
     )
 
 
 def save_artifacts(
-    model: xgb.Booster,
+    model: lgb.Booster,
     risk_tables: dict,
     impute_dict: dict,
     model_path: str,
     feature_columns: List[str],
     config: dict,
+    categorical_mappings: dict = None,
 ):
     """
     Saves the trained model and preprocessing artifacts.
 
     Args:
-        model: Trained XGBoost model
+        model: Trained LightGBM model
         risk_tables: Dictionary of risk tables
         impute_dict: Dictionary of imputation values
         model_path: Path to save model artifacts
         feature_columns: List of feature column names
         config: Configuration dictionary containing hyperparameters
+        categorical_mappings: Dictionary of categorical feature encodings (optional)
     """
     os.makedirs(model_path, exist_ok=True)
 
-    # Save XGBoost model
-    model_file = os.path.join(model_path, "xgboost_model.bst")
+    # Save LightGBM model
+    model_file = os.path.join(model_path, "lightgbm_model.txt")
     model.save_model(model_file)
-    logger.info(f"Saved XGBoost model to {model_file}")
+    logger.info(f"Saved LightGBM model to {model_file}")
 
-    # Save risk tables
-    risk_map_file = os.path.join(model_path, "risk_table_map.pkl")
-    with open(risk_map_file, "wb") as f:
-        pkl.dump(risk_tables, f)
-    logger.info(f"Saved consolidated risk table map to {risk_map_file}")
+    # Save preprocessing artifacts based on mode
+    use_native_cat = config.get("use_native_categorical", True)
 
-    # Save imputation dictionary
+    if use_native_cat:
+        # Save categorical mappings for native categorical mode
+        if categorical_mappings:
+            cat_mappings_file = os.path.join(model_path, "categorical_mappings.pkl")
+            with open(cat_mappings_file, "wb") as f:
+                pkl.dump(categorical_mappings, f)
+            logger.info(f"Saved categorical mappings to {cat_mappings_file}")
+
+            # Also save as JSON for readability
+            cat_mappings_json = os.path.join(model_path, "categorical_mappings.json")
+            with open(cat_mappings_json, "w") as f:
+                json.dump(categorical_mappings, f, indent=2)
+            logger.info(f"Saved categorical mappings (JSON) to {cat_mappings_json}")
+
+        logger.info("Using native categorical features - risk tables not saved")
+    else:
+        # Save risk tables for XGBoost-style mode
+        if risk_tables:
+            risk_map_file = os.path.join(model_path, "risk_table_map.pkl")
+            with open(risk_map_file, "wb") as f:
+                pkl.dump(risk_tables, f)
+            logger.info(f"Saved consolidated risk table map to {risk_map_file}")
+        else:
+            logger.warning("No risk tables to save in risk table mode")
+
+    # Save imputation dictionary (used in both modes)
     impute_file = os.path.join(model_path, "impute_dict.pkl")
     with open(impute_file, "wb") as f:
         pkl.dump(impute_dict, f)
     logger.info(f"Saved imputation dictionary to {impute_file}")
 
+    # Save categorical configuration
+    cat_config = {
+        "use_native_categorical": use_native_cat,
+        "categorical_features": config["cat_field_list"],
+        "min_data_per_group": config.get("min_data_per_group", 100),
+        "cat_smooth": config.get("cat_smooth", 10.0),
+        "max_cat_threshold": config.get("max_cat_threshold", 32),
+    }
+    cat_config_file = os.path.join(model_path, "categorical_config.json")
+    with open(cat_config_file, "w") as f:
+        json.dump(cat_config, f, indent=2)
+    logger.info(f"Saved categorical configuration to {cat_config_file}")
+
     # Save feature importance
     fmap_json = os.path.join(model_path, "feature_importance.json")
     with open(fmap_json, "w") as f:
-        json.dump(model.get_fscore(), f, indent=2)
+        # LightGBM returns numpy array, need to map to feature names
+        importance_dict = dict(
+            zip(feature_columns, model.feature_importance().tolist())
+        )
+        json.dump(importance_dict, f, indent=2)
     logger.info(f"Saved feature importance to {fmap_json}")
 
     # Save feature columns with ordering information
@@ -906,7 +908,7 @@ def save_artifacts(
     with open(feature_columns_file, "w") as f:
         # Add a header comment to document the importance of ordering
         f.write(
-            "# Feature columns in exact order required for XGBoost model inference\n"
+            "# Feature columns in exact order required for LightGBM model inference\n"
         )
         f.write("# DO NOT MODIFY THE ORDER OF THESE COLUMNS\n")
         f.write("# Each line contains: <column_index>,<column_name>\n")
@@ -1058,11 +1060,11 @@ def evaluate_split(
     ids = df.get(idi, np.arange(len(df)))
     y_true = df[label].astype(int).values
 
-    # Build DMatrix *with* feature names
-    X = df[feats]
-    dmat = xgb.DMatrix(data=X, feature_names=feats)
+    # LightGBM predicts directly from numpy array
+    X = df[feats].values
+    y_prob = model.predict(X)
 
-    y_prob = model.predict(dmat)
+    # Handle binary output format
     if y_prob.ndim == 1:
         y_prob = np.vstack([1 - y_prob, y_prob]).T
 
@@ -1249,7 +1251,7 @@ def main(
     job_args: argparse.Namespace,
 ) -> None:
     """
-    Main function to execute the XGBoost training logic.
+    Main function to execute the LightGBM training logic.
 
     Args:
         input_paths: Dictionary of input paths with logical names
@@ -1317,7 +1319,7 @@ def main(
 
         logger.info(f"Loading hyperparameters from: {hparam_path}")
 
-        logger.info("Starting XGBoost training process...")
+        logger.info("Starting LightGBM training process...")
         logger.info(f"Loading configuration from {hparam_path}")
         config = load_and_validate_config(hparam_path)
         logger.info("Configuration loaded successfully")
@@ -1325,19 +1327,6 @@ def main(
         logger.info("Loading datasets...")
         train_df, val_df, test_df, input_format = load_datasets(data_dir)
         logger.info("Datasets loaded successfully")
-
-        # Convert numerical fields to numeric dtype (handles string-formatted numbers)
-        logger.info("Converting numerical fields to numeric dtype...")
-        if config.get("tab_field_list"):
-            train_df = convert_numerical_fields_to_numeric(
-                train_df, config["tab_field_list"], "training"
-            )
-            val_df = convert_numerical_fields_to_numeric(
-                val_df, config["tab_field_list"], "validation"
-            )
-            test_df = convert_numerical_fields_to_numeric(
-                test_df, config["tab_field_list"], "test"
-            )
 
         # Store format in config for output preservation
         config["_input_format"] = input_format
@@ -1351,6 +1340,14 @@ def main(
         )
         use_precomputed_features = environ_vars.get("USE_PRECOMPUTED_FEATURES", False)
 
+        # Override use_native_categorical from environment variable if set
+        if "USE_NATIVE_CATEGORICAL" in environ_vars:
+            use_native_categorical_env = environ_vars.get("USE_NATIVE_CATEGORICAL")
+            config["use_native_categorical"] = use_native_categorical_env
+            logger.info(
+                f"Overriding use_native_categorical from environment: {use_native_categorical_env}"
+            )
+
         # ===== PREPROCESSING ARTIFACT CONTROL =====
         logger.info("=" * 70)
         logger.info("PREPROCESSING ARTIFACT CONTROL")
@@ -1358,6 +1355,9 @@ def main(
         logger.info(f"USE_PRECOMPUTED_IMPUTATION: {use_precomputed_imputation}")
         logger.info(f"USE_PRECOMPUTED_RISK_TABLES: {use_precomputed_risk_tables}")
         logger.info(f"USE_PRECOMPUTED_FEATURES: {use_precomputed_features}")
+        logger.info(
+            f"USE_NATIVE_CATEGORICAL: {config.get('use_native_categorical', True)}"
+        )
         logger.info(f"model_artifacts_input directory: {model_artifacts_input_dir}")
         logger.info("=" * 70)
 
@@ -1377,27 +1377,6 @@ def main(
             precomputed["loaded"]["risk_tables"],
         )
 
-        # ===== FIELD TYPE VALIDATION =====
-        logger.info("=" * 70)
-        logger.info("FIELD TYPE VALIDATION")
-        logger.info("=" * 70)
-
-        # Validate categorical fields before risk table mapping (only if computing inline)
-        if not precomputed["loaded"]["risk_tables"]:
-            logger.info(
-                "Validating categorical field types before risk table mapping..."
-            )
-            validate_categorical_fields(train_df, config["cat_field_list"], "train")
-            validate_categorical_fields(val_df, config["cat_field_list"], "val")
-            validate_categorical_fields(test_df, config["cat_field_list"], "test")
-            logger.info("✓ Categorical field type validation passed")
-        else:
-            logger.info(
-                "Skipping categorical field validation (using pre-computed risk tables)"
-            )
-
-        logger.info("=" * 70)
-
         # ===== 1. Numerical Imputation =====
         if precomputed["loaded"]["imputation"]:
             # Data already imputed - just use the artifacts for model packaging
@@ -1416,21 +1395,86 @@ def main(
             )
             logger.info("✓ Numerical imputation completed")
 
-        # ===== 2. Risk Table Mapping =====
-        if precomputed["loaded"]["risk_tables"]:
-            # Data already risk-mapped - just use the artifacts for model packaging
-            risk_tables = precomputed["risk_tables"]
+        # ===== 2. Categorical Feature Encoding =====
+        # Check if using native categorical features or risk table mapping
+        use_native_cat = config.get("use_native_categorical", True)
+        categorical_mappings = {}
+
+        if use_native_cat:
+            logger.info("=" * 70)
+            logger.info("USING LIGHTGBM NATIVE CATEGORICAL FEATURE HANDLING")
+            logger.info("=" * 70)
+            logger.info(f"Categorical features: {config['cat_field_list']}")
             logger.info(
-                "✓ Using pre-computed risk table artifacts (data already transformed)"
+                "Encoding categorical features to integers using DictionaryEncodingProcessor..."
             )
-            logger.info("  → Skipping risk table transformation")
+
+            # Encode categorical features to integers for LightGBM
+            encoding_processors = {}
+
+            for cat_col in config["cat_field_list"]:
+                if cat_col not in train_df.columns:
+                    logger.warning(
+                        f"Categorical column '{cat_col}' not found in data, skipping"
+                    )
+                    continue
+
+                # Create processor for each categorical column
+                processor = DictionaryEncodingProcessor(
+                    columns=[cat_col],
+                    unknown_strategy="default",  # Use default value for unseen categories
+                    default_value=-1,  # -1 will be treated as missing by LightGBM
+                )
+
+                # Fit on training data
+                processor.fit(train_df[[cat_col]])
+                encoding_processors[cat_col] = processor
+
+                # Get the mapping for artifacts
+                categorical_mappings[cat_col] = processor.categorical_map.get(
+                    cat_col, {}
+                )
+
+                # Transform all splits
+                train_df = processor.process(train_df)
+                val_df = processor.process(val_df)
+                test_df = processor.process(test_df)
+
+                # Ensure integer type
+                train_df[cat_col] = train_df[cat_col].astype("int32")
+                val_df[cat_col] = val_df[cat_col].astype("int32")
+                test_df[cat_col] = test_df[cat_col].astype("int32")
+
+                logger.info(
+                    f"✓ Encoded '{cat_col}': {len(categorical_mappings[cat_col])} unique categories"
+                )
+
+            # Risk tables not needed when using native categorical
+            risk_tables = {}
+            logger.info("✓ Categorical encoding completed")
+            logger.info("=" * 70)
+
         else:
-            # Compute inline AND transform data
-            logger.info("Computing risk tables inline and transforming data...")
-            train_df, val_df, test_df, risk_tables = fit_and_apply_risk_tables(
-                config, train_df, val_df, test_df
-            )
-            logger.info("✓ Risk table mapping completed")
+            logger.info("=" * 70)
+            logger.info("USING RISK TABLE MAPPING (XGBoost-STYLE)")
+            logger.info("=" * 70)
+
+            if precomputed["loaded"]["risk_tables"]:
+                # Data already risk-mapped - just use the artifacts for model packaging
+                risk_tables = precomputed["risk_tables"]
+                logger.info(
+                    "✓ Using pre-computed risk table artifacts (data already transformed)"
+                )
+                logger.info("  → Skipping risk table transformation")
+            else:
+                # Compute inline AND transform data
+                logger.info("Computing risk tables inline and transforming data...")
+                train_df, val_df, test_df, risk_tables = fit_and_apply_risk_tables(
+                    config, train_df, val_df, test_df
+                )
+                logger.info("✓ Risk table mapping completed")
+
+            logger.info("=" * 70)
 
         # ===== 3. Feature Selection =====
         if use_precomputed_features:
@@ -1471,8 +1515,8 @@ def main(
             feature_columns = config["tab_field_list"] + config["cat_field_list"]
             logger.info(f"  → Using {len(feature_columns)} features from config")
 
-        logger.info("Preparing DMatrices for XGBoost...")
-        # Update config with actual feature columns for DMatrix preparation
+        logger.info("Preparing Datasets for LightGBM...")
+        # Update config with actual feature columns for Dataset preparation
         config["tab_field_list"] = [
             f for f in feature_columns if f in config.get("tab_field_list", [])
         ]
@@ -1480,14 +1524,14 @@ def main(
             f for f in feature_columns if f in config.get("cat_field_list", [])
         ]
 
-        dtrain, dval, feature_columns = prepare_dmatrices(config, train_df, val_df)
-        logger.info("DMatrices prepared successfully")
+        train_set, val_set, feature_columns = prepare_datasets(config, train_df, val_df)
+        logger.info("Datasets prepared successfully")
         logger.info(
             f"Using {len(feature_columns)} features in order: {feature_columns}"
         )
 
         logger.info("Starting model training...")
-        model = train_model(config, dtrain, dval)
+        model = train_model(config, train_set, val_set)
         logger.info("Model training completed")
 
         logger.info("Saving model artifacts...")
@@ -1501,6 +1545,7 @@ def main(
             model_path=model_dir,
             feature_columns=feature_columns,
             config=config,
+            categorical_mappings=categorical_mappings,
         )
         logger.info("✓ Model artifacts saved successfully")
 
@@ -1605,6 +1650,12 @@ if __name__ == "__main__":
         "REGION": os.environ.get("REGION", "NA"),
     }
 
+    # Add USE_NATIVE_CATEGORICAL if set in environment
+    if "USE_NATIVE_CATEGORICAL" in os.environ:
+        environ_vars["USE_NATIVE_CATEGORICAL"] = (
+            os.environ.get("USE_NATIVE_CATEGORICAL", "true").lower() == "true"
+        )
+
     # Create empty args namespace to maintain function signature
     args = argparse.Namespace()
 
@@ -1618,7 +1669,7 @@ if __name__ == "__main__":
         # Call the refactored main function
         main(input_paths, output_paths, environ_vars, args)
 
-        logger.info("XGBoost training script completed successfully")
+        logger.info("LightGBM training script completed successfully")
         sys.exit(0)
     except Exception as e:
         logger.error(f"Exception during training: {str(e)}")

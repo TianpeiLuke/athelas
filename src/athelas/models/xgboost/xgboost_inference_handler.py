@@ -3,181 +3,11 @@
 # Standard library imports
 import os
 import sys
-from subprocess import check_call
 import logging
-
-# ============================================================================
-# PACKAGE INSTALLATION CONFIGURATION
-# ============================================================================
-
-# Control which PyPI source to use via environment variable
-# Set USE_SECURE_PYPI=true to use secure CodeArtifact PyPI
-# Set USE_SECURE_PYPI=false or leave unset to use public PyPI
-USE_SECURE_PYPI = os.environ.get("USE_SECURE_PYPI", "false").lower() == "true"
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-def _get_secure_pypi_access_token() -> str:
-    """
-    Get CodeArtifact access token for secure PyPI.
-
-    Returns:
-        str: Authorization token for CodeArtifact
-
-    Raises:
-        Exception: If token retrieval fails
-    """
-    # Local import to avoid loading boto3 before package installation
-    import boto3
-
-    try:
-        os.environ["AWS_STS_REGIONAL_ENDPOINTS"] = "regional"
-        sts = boto3.client("sts", region_name="us-east-1")
-        caller_identity = sts.get_caller_identity()
-        assumed_role_object = sts.assume_role(
-            RoleArn="arn:aws:iam::675292366480:role/SecurePyPIReadRole_"
-            + caller_identity["Account"],
-            RoleSessionName="SecurePypiReadRole",
-        )
-        credentials = assumed_role_object["Credentials"]
-        code_artifact_client = boto3.client(
-            "codeartifact",
-            aws_access_key_id=credentials["AccessKeyId"],
-            aws_secret_access_key=credentials["SecretAccessKey"],
-            aws_session_token=credentials["SessionToken"],
-            region_name="us-west-2",
-        )
-        token = code_artifact_client.get_authorization_token(
-            domain="amazon", domainOwner="149122183214"
-        )["authorizationToken"]
-
-        logger.info("Successfully retrieved secure PyPI access token")
-        return token
-
-    except Exception as e:
-        logger.error(f"Failed to retrieve secure PyPI access token: {e}")
-        raise
-
-
-def install_packages_from_public_pypi(packages: list) -> None:
-    """
-    Install packages from standard public PyPI.
-
-    Args:
-        packages: List of package specifications (e.g., ["pandas==1.5.0", "numpy"])
-    """
-    logger.info(f"Installing {len(packages)} packages from public PyPI")
-    logger.info(f"Packages: {packages}")
-
-    try:
-        check_call([sys.executable, "-m", "pip", "install", *packages])
-        logger.info("✓ Successfully installed packages from public PyPI")
-    except Exception as e:
-        logger.error(f"✗ Failed to install packages from public PyPI: {e}")
-        raise
-
-
-def install_packages_from_secure_pypi(packages: list) -> None:
-    """
-    Install packages from secure CodeArtifact PyPI.
-
-    Args:
-        packages: List of package specifications (e.g., ["pandas==1.5.0", "numpy"])
-    """
-    logger.info(f"Installing {len(packages)} packages from secure PyPI")
-    logger.info(f"Packages: {packages}")
-
-    try:
-        token = _get_secure_pypi_access_token()
-        index_url = f"https://aws:{token}@amazon-149122183214.d.codeartifact.us-west-2.amazonaws.com/pypi/secure-pypi/simple/"
-
-        check_call(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--index-url",
-                index_url,
-                *packages,
-            ]
-        )
-
-        logger.info("✓ Successfully installed packages from secure PyPI")
-    except Exception as e:
-        logger.error(f"✗ Failed to install packages from secure PyPI: {e}")
-        raise
-
-
-def install_packages(packages: list, use_secure: bool = USE_SECURE_PYPI) -> None:
-    """
-    Install packages from PyPI source based on configuration.
-
-    This is the main installation function that delegates to either public or
-    secure PyPI based on the USE_SECURE_PYPI environment variable.
-
-    Args:
-        packages: List of package specifications (e.g., ["pandas==1.5.0", "numpy"])
-        use_secure: If True, use secure CodeArtifact PyPI; if False, use public PyPI.
-                   Defaults to USE_SECURE_PYPI environment variable.
-
-    Environment Variables:
-        USE_SECURE_PYPI: Set to "true" to use secure PyPI, "false" for public PyPI
-
-    Example:
-        # Install from public PyPI (default)
-        install_packages(["pandas==1.5.0", "numpy"])
-
-        # Install from secure PyPI
-        os.environ["USE_SECURE_PYPI"] = "true"
-        install_packages(["pandas==1.5.0", "numpy"])
-    """
-    logger.info("=" * 70)
-    logger.info("PACKAGE INSTALLATION")
-    logger.info("=" * 70)
-    logger.info(f"PyPI Source: {'SECURE (CodeArtifact)' if use_secure else 'PUBLIC'}")
-    logger.info(
-        f"Environment Variable USE_SECURE_PYPI: {os.environ.get('USE_SECURE_PYPI', 'not set')}"
-    )
-    logger.info(f"Number of packages: {len(packages)}")
-    logger.info("=" * 70)
-
-    try:
-        if use_secure:
-            install_packages_from_secure_pypi(packages)
-        else:
-            install_packages_from_public_pypi(packages)
-
-        logger.info("=" * 70)
-        logger.info("✓ PACKAGE INSTALLATION COMPLETED SUCCESSFULLY")
-        logger.info("=" * 70)
-
-    except Exception as e:
-        logger.error("=" * 70)
-        logger.error("✗ PACKAGE INSTALLATION FAILED")
-        logger.error("=" * 70)
-        raise
-
-
-# ============================================================================
-# INSTALL REQUIRED PACKAGES
-# ============================================================================
-
-# Define required packages for this script
-required_packages = [
-    "numpy==1.24.4",
-    "scipy==1.10.1",
-    "matplotlib>=3.3.0,<3.7.0",
-    "pygam==0.8.1",
-]
-
-# Install packages using unified installation function
-install_packages(required_packages)
-
-print("***********************Package Installation Complete*********************")
 
 import json
 import logging
@@ -190,16 +20,13 @@ from io import StringIO, BytesIO
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-from flask import Response
 
 # Local imports
-from ...processing.categorical.risk_table_processor import RiskTableMappingProcessor
-from ...processing.numerical.numerical_imputation_processor import (
+from processing.categorical.risk_table_processor import RiskTableMappingProcessor
+from processing.numerical.numerical_imputation_processor import (
     NumericalVariableImputationProcessor,
 )
 
-# Constants
-__version__ = "1.0.0"
 
 # File names
 MODEL_FILE = "xgboost_model.bst"
@@ -220,16 +47,6 @@ CALIBRATION_MODELS_DIR = "calibration_models"  # For multiclass calibration mode
 CONTENT_TYPE_CSV = "text/csv"
 CONTENT_TYPE_JSON = "application/json"
 CONTENT_TYPE_PARQUET = "application/x-parquet"
-
-
-# Simple Response class for type hints
-class InferenceResponse:
-    """Simple response class for type hints."""
-
-    def __init__(self, response: str, status: int = 200, mimetype: str = "text/plain"):
-        self.response = response
-        self.status = status
-        self.mimetype = mimetype
 
 
 # Setup logging
@@ -490,22 +307,56 @@ def apply_percentile_calibration(
 def apply_regular_binary_calibration(scores: np.ndarray, calibrator: Any) -> np.ndarray:
     """
     Apply regular calibration to binary classification scores.
+    Supports both lookup table format (List[Tuple[float, float]]) and legacy model objects.
 
     Args:
         scores: Raw model prediction scores (N x 2)
-        calibrator: Trained calibration model (GAM, Isotonic, or Platt)
+        calibrator: Lookup table or trained calibration model (GAM, Isotonic, or Platt)
 
     Returns:
         Calibrated scores with same shape as input
     """
     calibrated = np.zeros_like(scores)
 
-    if hasattr(calibrator, "transform"):
+    # Check if calibrator is a lookup table (new optimized format)
+    if isinstance(calibrator, list):
+        logger.info("Using lookup table calibration (optimized)")
+
+        # Reuse the same interpolation function as percentile calibration
+        def interpolate_score(
+            raw_score: float, mapping: List[Tuple[float, float]]
+        ) -> float:
+            """Interpolate calibrated score for a single raw score."""
+            if raw_score <= mapping[0][0]:
+                return mapping[0][1]
+            if raw_score >= mapping[-1][0]:
+                return mapping[-1][1]
+
+            for i in range(len(mapping) - 1):
+                if mapping[i][0] <= raw_score <= mapping[i + 1][0]:
+                    x1, y1 = mapping[i]
+                    x2, y2 = mapping[i + 1]
+                    if x2 == x1:
+                        return y1
+                    return y1 + (y2 - y1) * (raw_score - x1) / (x2 - x1)
+            return mapping[-1][1]
+
+        # Apply lookup table calibration (FAST: ~2-5 μs per prediction)
+        for i in range(scores.shape[0]):
+            calibrated[i, 1] = interpolate_score(scores[i, 1], calibrator)
+            calibrated[i, 0] = 1 - calibrated[i, 1]
+
+        return calibrated
+
+    # Legacy model object format (backward compatibility)
+    elif hasattr(calibrator, "transform"):
         # Isotonic regression - expects 1D array
+        logger.info("Using Isotonic model calibration (legacy)")
         calibrated[:, 1] = calibrator.transform(scores[:, 1])  # class 1 probability
         calibrated[:, 0] = 1 - calibrated[:, 1]  # class 0 probability
     elif hasattr(calibrator, "predict_proba"):
         # GAM or Platt scaling - expects 2D array
+        logger.info("Using GAM/Platt model calibration (legacy)")
         probas = calibrator.predict_proba(scores[:, 1].reshape(-1, 1))
         calibrated[:, 1] = probas  # class 1 probability
         calibrated[:, 0] = 1 - probas  # class 0 probability
@@ -689,7 +540,6 @@ def model_fn(model_dir: str) -> Dict[str, Any]:
             "numerical_processors": numerical_processors,
             "feature_importance": feature_importance,
             "config": config,
-            "version": __version__,
             "calibrator": calibrator,
         }
 
@@ -707,7 +557,7 @@ def input_fn(
     request_body: Union[str, bytes],
     request_content_type: str,
     context: Optional[Any] = None,
-) -> Union[pd.DataFrame, InferenceResponse]:
+) -> pd.DataFrame:
     """
     Deserialize the Invoke request body into an object we can perform prediction on.
 
@@ -717,7 +567,10 @@ def input_fn(
         context: Additional context (optional)
 
     Returns:
-        Union[pd.DataFrame, Response]: Parsed DataFrame or error Response
+        pd.DataFrame: Parsed DataFrame
+
+    Raises:
+        ValueError: If content type is unsupported or data cannot be parsed
     """
     logger.info(f"Received request with Content-Type: {request_content_type}")
     try:
@@ -787,21 +640,16 @@ def input_fn(
             return df
 
         else:
-            logger.warning(f"Unsupported content type: {request_content_type}")
-            return Response(
-                response=f"This predictor only supports CSV, JSON, or Parquet data. Received: {request_content_type}",
-                status=415,
-                mimetype="text/plain",
-            )
+            error_msg = f"This predictor only supports CSV, JSON, or Parquet data. Received: {request_content_type}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+    except ValueError:
+        # Re-raise ValueError as-is (includes our unsupported content type error)
+        raise
     except Exception as e:
-        logger.error(
-            f"Failed to parse input ({request_content_type}). Error: {e}", exc_info=True
-        )
-        return Response(
-            response=f"Invalid input format or corrupted data. Error during parsing: {e}",
-            status=400,
-            mimetype="text/plain",
-        )
+        error_msg = f"Invalid input format or corrupted data. Error during parsing: {e}"
+        logger.error(error_msg, exc_info=True)
+        raise ValueError(error_msg)
 
 
 # --------------------------------------------------------------------------------
@@ -855,6 +703,55 @@ def assign_column_names(
     return df
 
 
+def preprocess_single_record_fast(
+    df: pd.DataFrame,
+    feature_columns: List[str],
+    risk_processors: Dict[str, Any],
+    numerical_processors: Dict[str, Any],
+) -> np.ndarray:
+    """
+    Fast path for single-record preprocessing.
+
+    Bypasses pandas DataFrame operations for 10-100x speedup.
+    Uses processor.process() method for direct value processing.
+
+    Args:
+        df: Single-row DataFrame with feature values
+        feature_columns: Ordered feature column names
+        risk_processors: Risk table processors for categorical features
+        numerical_processors: Imputation processors for numerical features
+
+    Returns:
+        Processed feature values ready for XGBoost [n_features]
+    """
+    processed = np.zeros(len(feature_columns), dtype=np.float32)
+
+    for i, col in enumerate(feature_columns):
+        val = df[col].iloc[0]
+
+        # Apply risk table mapping if categorical
+        if col in risk_processors:
+            # Uses optimized process() method (direct dict lookup)
+            val = risk_processors[col].process(val)
+
+        # Apply numerical imputation
+        if col in numerical_processors:
+            # Uses optimized process() method (simple null check)
+            val = numerical_processors[col].process(val)
+
+        # Convert to float with error handling
+        try:
+            val = float(val)
+        except (ValueError, TypeError):
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Could not convert {col}={val} to float, using 0.0")
+            val = 0.0
+
+        processed[i] = val
+
+    return processed
+
+
 def apply_preprocessing(
     df: pd.DataFrame,
     feature_columns: List[str],
@@ -873,21 +770,26 @@ def apply_preprocessing(
     Returns:
         Preprocessed DataFrame
     """
-    # Log initial state
-    logger.debug("Initial data types and unique values:")
-    for col in feature_columns:
-        logger.debug(f"{col}: dtype={df[col].dtype}, unique values={df[col].unique()}")
+    # Conditional logging (only if DEBUG enabled)
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("Initial data types and unique values:")
+        for col in feature_columns:
+            logger.debug(
+                f"{col}: dtype={df[col].dtype}, unique values={df[col].unique()}"
+            )
 
     # Apply risk table mapping
     for feature, processor in risk_processors.items():
         if feature in df.columns:
-            logger.debug(f"Applying risk table mapping for feature: {feature}")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Applying risk table mapping for feature: {feature}")
             df[feature] = processor.transform(df[feature])
 
     # Apply numerical imputation (one processor per column)
     for feature, processor in numerical_processors.items():
         if feature in df.columns:
-            logger.debug(f"Applying numerical imputation for feature: {feature}")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Applying numerical imputation for feature: {feature}")
             df[feature] = processor.transform(df[feature])
 
     return df
@@ -993,6 +895,8 @@ def predict_fn(
     """
     Generate predictions from preprocessed input data.
 
+    Optimized for single-record inference with fast path detection.
+
     Args:
         input_data: DataFrame containing the preprocessed input
         model_artifacts: Dictionary containing model and preprocessing objects
@@ -1016,24 +920,52 @@ def predict_fn(
         # Validate input
         validate_input_data(input_data, feature_columns)
 
-        # Assign column names if needed
-        df = assign_column_names(input_data, feature_columns)
+        # FAST PATH: Single-record inference (10-100x faster preprocessing)
+        if len(input_data) == 1:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Using fast path for single-record inference")
 
-        # Apply preprocessing
-        df = apply_preprocessing(
-            df, feature_columns, risk_processors, numerical_processors
-        )
+            # Assign column names if needed
+            df = assign_column_names(input_data, feature_columns)
 
-        # Convert to numeric
-        df = convert_to_numeric(df, feature_columns)
+            # Process single record with fast path (bypasses pandas operations)
+            processed_values = preprocess_single_record_fast(
+                df=df,
+                feature_columns=feature_columns,
+                risk_processors=risk_processors,
+                numerical_processors=numerical_processors,
+            )
 
-        # Generate raw predictions
-        raw_predictions = generate_predictions(
-            model=model,
-            df=df,
-            feature_columns=feature_columns,
-            is_multiclass=is_multiclass,
-        )
+            # Create DMatrix from preprocessed values
+            dtest = xgb.DMatrix(
+                processed_values.reshape(1, -1), feature_names=feature_columns
+            )
+        else:
+            # BATCH PATH: Original DataFrame processing for multiple records
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Using batch path for {len(input_data)} records")
+
+            # Assign column names if needed
+            df = assign_column_names(input_data, feature_columns)
+
+            # Apply preprocessing
+            df = apply_preprocessing(
+                df, feature_columns, risk_processors, numerical_processors
+            )
+
+            # Convert to numeric
+            df = convert_to_numeric(df, feature_columns)
+
+            # Create DMatrix
+            dtest = xgb.DMatrix(
+                df[feature_columns].values, feature_names=feature_columns
+            )
+
+        # Generate raw predictions (same for both paths)
+        raw_predictions = model.predict(dtest)
+
+        if not is_multiclass and len(raw_predictions.shape) == 1:
+            raw_predictions = np.column_stack([1 - raw_predictions, raw_predictions])
 
         # Apply calibration if available, otherwise use raw predictions
         if calibrator is not None:
@@ -1041,7 +973,8 @@ def predict_fn(
                 calibrated_predictions = apply_calibration(
                     raw_predictions, calibrator, is_multiclass
                 )
-                logger.info("Applied calibration to predictions")
+                if logger.isEnabledFor(logging.INFO):
+                    logger.info("Applied calibration to predictions")
             except Exception as e:
                 logger.warning(
                     f"Failed to apply calibration, using raw predictions: {e}"
@@ -1049,9 +982,10 @@ def predict_fn(
                 calibrated_predictions = raw_predictions.copy()
         else:
             # No calibrator available, use raw predictions
-            logger.info(
-                "No calibration model found, using raw predictions for calibrated output"
-            )
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(
+                    "No calibration model found, using raw predictions for calibrated output"
+                )
             calibrated_predictions = raw_predictions.copy()
 
         return {
@@ -1061,12 +995,13 @@ def predict_fn(
 
     except Exception as e:
         logger.error(f"Error during prediction: {str(e)}", exc_info=True)
-        logger.error("Input data types and unique values:")
-        for col in feature_columns:
-            if col in input_data.columns:
-                logger.error(
-                    f"{col}: dtype={input_data[col].dtype}, unique values={input_data[col].unique()}"
-                )
+        if logger.isEnabledFor(logging.ERROR):
+            logger.error("Input data types and unique values:")
+            for col in feature_columns:
+                if col in input_data.columns:
+                    logger.error(
+                        f"{col}: dtype={input_data[col].dtype}, unique values={input_data[col].unique()}"
+                    )
         raise
 
 
@@ -1406,7 +1341,5 @@ def output_fn(
 
     except Exception as e:
         logger.error(f"Error during output formatting: {e}", exc_info=True)
-        error_response = json.dumps(
-            {"error": f"Failed to format output: {e}", "version": __version__}
-        )
+        error_response = json.dumps({"error": f"Failed to format output: {e}"})
         return error_response, CONTENT_TYPE_JSON
