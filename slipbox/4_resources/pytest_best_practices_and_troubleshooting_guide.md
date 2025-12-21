@@ -299,6 +299,128 @@ mock_catalog.get_step_info.side_effect = [step_info1, step_info2]  # ← Exactly
 
 ## Best Practices Summary
 
+### Critical Pattern: Module-Level Mock for Import Side Effects
+
+**🚨 CRITICAL: Mock Subprocess and Side Effects BEFORE Module Import**
+
+When testing modules that execute code at module level (such as package installations), you MUST mock side-effecting functions BEFORE importing the module:
+
+```python
+# ✅ CORRECT: Mock subprocess.check_call BEFORE importing module
+from unittest.mock import patch
+
+with patch("subprocess.check_call"):
+    # Import happens INSIDE the context manager
+    # This prevents actual pip installations from running
+    from cursus.steps.scripts.model_metrics_computation import (
+        _detect_file_format,
+        detect_and_load_predictions,
+        validate_prediction_data,
+        # ... other functions
+    )
+
+# Now you can use the imported functions in tests without triggering pip install
+```
+
+**❌ WRONG: Importing before mocking**
+```python
+# This will execute install_packages() and trigger actual pip installs!
+from cursus.steps.scripts.model_metrics_computation import main
+
+# Too late - side effects already happened
+with patch("subprocess.check_call"):
+    main(...)  # Mock has no effect on module-level code
+```
+
+**Why This Pattern is Critical:**
+
+1. **Module-Level Execution**: Python executes all top-level code when importing a module
+2. **Side Effects**: Scripts may call `subprocess.check_call`, `pip install`, or other system operations at import time
+3. **Test Environment**: These operations should not run in test environments
+4. **Performance**: Prevents slow operations during test collection
+5. **Reliability**: Avoids network dependencies and system modifications during testing
+
+**Pattern Detection in Source Script:**
+
+The `model_metrics_computation.py` script demonstrates this pattern perfectly (lines 125-133):
+```python
+# ============================================================================
+# INSTALL REQUIRED PACKAGES
+# ============================================================================
+
+# Define required packages for this script
+required_packages = [
+    "matplotlib==3.7.0",
+]
+
+# Install packages using unified installation function
+install_packages(required_packages)  # ← Executes at module import! Line 130
+
+print("***********************Package Installation Complete*********************")
+
+# THEN the actual imports happen:
+import argparse      # Line 136
+import pandas as pd
+import numpy as np
+# ... more imports
+import matplotlib.pyplot as plt  # Line 144 - imported AFTER installation
+```
+
+**How install_packages() Triggers subprocess.check_call:**
+
+The script uses a multi-level function call chain:
+```python
+# Line 4: Import statement
+from subprocess import check_call
+
+# Line 116: Main installation function
+def install_packages(packages: list, use_secure: bool = USE_SECURE_PYPI) -> None:
+    # Line 128-132: Delegates to specific installation functions
+    if use_secure:
+        install_packages_from_secure_pypi(packages)
+    else:
+        install_packages_from_public_pypi(packages)  # ← Default path
+
+# Line 72-84: Public PyPI installation
+def install_packages_from_public_pypi(packages: list) -> None:
+    try:
+        check_call([sys.executable, "-m", "pip", "install", *packages])  # ← Line 81
+        # This executes: python -m pip install matplotlib==3.7.0
+```
+
+**Why This Happens at Import:**
+- Line 130 calls `install_packages(required_packages)` at **module level** (not inside a function)
+- Python executes all module-level code when importing
+- Therefore: `import model_metrics_computation` → triggers `install_packages()` → triggers `check_call()` → runs pip install
+
+**Test Implications:**
+Without mocking subprocess.check_call before import, the test would:
+1. Actually install matplotlib==3.7.0 (slow, network-dependent)
+2. Potentially fail in environments without network access
+3. Pollute the test environment with package installations
+4. Make test collection slow and unreliable
+
+**Common Module-Level Side Effects to Mock:**
+
+```python
+# Mock these BEFORE importing the module:
+- subprocess.check_call           # pip install, system commands
+- subprocess.run                  # shell commands
+- boto3.client()                  # AWS API calls
+- requests.get()                  # HTTP requests
+- open() / file operations        # File system modifications
+- os.environ modifications        # Environment changes
+- sys.path modifications          # Import path changes
+```
+
+**Best Practice Checklist:**
+
+- [ ] Identify if module has top-level code execution
+- [ ] Mock all side-effecting functions before import
+- [ ] Use context manager for clean mock setup
+- [ ] Import module inside the context manager
+- [ ] Document why module-level mocking is required
+
 ### The Golden Rule: Implementation-First Test Development
 
 **The single most effective practice to prevent 95% of test failures:**

@@ -1597,6 +1597,388 @@ class Mtgbm:
         # Delegate to new implementation
 ```
 
+## Limitations and Architectural Constraints
+
+### Critical Limitation: Multi-Task Prediction at Inference Time
+
+> ⚠️ **CRITICAL ARCHITECTURAL CONSTRAINT**
+> 
+> The refactored model class architecture successfully trains multi-task models with improved code quality and maintainability, but has a **fundamental limitation at inference time** due to the `BaseMultiTaskModel.predict()` method's dependency on standard LightGBM.
+
+#### The Problem
+
+**Root Cause:** The `BaseMultiTaskModel.predict()` method is **architecturally designed** but **cannot function** because standard LightGBM only supports single-output predictions.
+
+```python
+class BaseMultiTaskModel(ABC):
+    def predict(
+        self,
+        X: np.ndarray,
+        use_best_epoch: bool = True
+    ) -> np.ndarray:
+        """
+        Make predictions using trained models.
+        
+        ❌ THIS METHOD CANNOT WORK WITH STANDARD LIGHTGBM ❌
+        
+        Returns
+        -------
+        predictions : np.ndarray
+            Predictions [N_samples, N_tasks]  # ← NOT POSSIBLE
+        """
+        # ... implementation exists but cannot work
+        for task_idx in range(self.config.num_tasks):
+            model = self.state.models.get((e, task_idx))
+            # ❌ This only returns [N_samples] not [N_samples, N_tasks]
+            predictions[:, task_idx] = model.predict(X_task)
+```
+
+**The Issue:**
+- Method signature **looks correct**: Returns `np.ndarray [N_samples, N_tasks]`
+- Implementation **looks reasonable**: Iterates through tasks, aggregates predictions
+- **Runtime reality**: Each `model.predict()` returns **single output only**
+- **Architecture assumes**: Each model can contribute to multi-task output
+- **Reality**: Standard LightGBM models are fundamentally single-output
+
+#### Impact on Each Model Class
+
+**1. BaselineModel** (⚠️ Partially Works)
+```python
+class BaselineModel(BaseMultiTaskModel):
+    """
+    Independent baseline models for each task.
+    """
+```
+
+**Training:** ✅ Fully functional
+- Each task trains independently
+- No inter-task dependencies
+- Standard LightGBM sufficient
+
+**Inference:** ⚠️ **Works but defeats multi-task purpose**
+- Can call `predict()` which iterates through N separate models
+- Functionally equivalent to training N separate models from the start
+- **Not really multi-task** - just N independent models
+- Loses efficiency benefits of shared architecture
+
+**2. SharedTreesModel** (❌ Fundamentally Broken)
+```python
+class SharedTreesModel(BaseMultiTaskModel):
+    """
+    Multi-task model with configurable information sharing strategies.
+    
+    ❌ CANNOT GENERATE PREDICTIONS AS DESIGNED ❌
+    """
+```
+
+**Training:** ✅ Fully functional
+- Information sharing works correctly
+- Tasks benefit from shared predictions in feature space
+- Custom loss functions work
+
+**Inference:** ❌ **Completely broken**
+- Method requires **iterating through epochs** to rebuild feature space
+- At each epoch, needs predictions from **all tasks simultaneously**
+- Standard LightGBM cannot provide multi-task predictions
+- **Architectural mismatch**: Design assumes multi-output capability
+
+**Code Analysis:**
+```python
+def predict(self, X: np.ndarray, use_best_epoch: bool = True):
+    # Iterate through epochs to build up predictions
+    for e in range(epoch + 1):
+        for task_idx in range(self.config.num_tasks):
+            model = self.state.models.get((e, task_idx))
+            
+            # ❌ PROBLEM: Need ALL task predictions before updating features
+            predictions[:, task_idx] = model.predict(X_task)
+        
+        # Update features if not last epoch
+        if e < epoch:
+            # ❌ PROBLEM: This requires complete [N_samples, N_tasks] matrix
+            # but we only have single-output predictions per model
+            X_current = self._update_features_for_next_epoch(X, predictions, e)
+```
+
+**Why It Fails:**
+1. Each model trained at epoch `e` expects features including predictions from epoch `e-1`
+2. To get predictions from epoch `e-1`, need to run **all** task models from that epoch
+3. Standard LightGBM provides **one prediction at a time**, not multi-task bundle
+4. Cannot reconstruct the feature space that was used during training
+
+**3. MTGBMModel** (❌ Most Severely Affected)
+```python
+class MTGBMModel(BaseMultiTaskModel):
+    """
+    Multi-task GBM with custom loss functions.
+    
+    ❌ TRAINING WORKS, INFERENCE COMPLETELY BROKEN ❌
+    """
+```
+
+**Training:** ✅ Fully functional  
+- Custom loss functions work perfectly
+- Adaptive weight loss operates correctly
+- Knowledge distillation triggers properly
+- All multi-task training benefits realized
+
+**Inference:** ❌ **Cannot generate predictions**
+- Same epoch iteration problem as SharedTreesModel
+- **Worse**: Custom loss explicitly designed for multi-task coordination
+- Models trained with inter-task dependencies
+- **Cannot be decomposed** into independent single-task predictions
+
+**The Irony:**
+- Most sophisticated training approach (custom loss, weight adaptation, KD)
+- **Most useless at inference** because of tight multi-task coupling
+- Training succeeds brilliantly, deployment fails completely
+
+#### Why BaseMultiTaskModel.predict() Cannot Work
+
+**Architectural Assumption (Wrong):**
+```python
+# Design assumes each LightGBM model can contribute to multi-task output
+class BaseMultiTaskModel:
+    def predict(self, X):
+        predictions = np.zeros((n_samples, num_tasks))
+        
+        # ASSUMES: Can reconstruct training-time feature space
+        # ASSUMES: Each model can output its contribution to multi-task vector
+        # REALITY: Neither assumption is valid with standard LightGBM
+```
+
+**Technical Reality:**
+```python
+# Standard LightGBM Booster
+class Booster:
+    def predict(self, data):
+        # Returns: np.ndarray shape [N_samples]
+        # Each tree contributes ONE value
+        # Final prediction is ONE value per sample
+        # Cannot return multiple values per sample
+        return single_predictions  # [N_samples]
+
+# What we need (not available)
+class MultiTaskBooster:  # ← DOES NOT EXIST in standard LightGBM
+    def predict(self, data):
+        # Would return: np.ndarray shape [N_samples, N_tasks]
+        # Each tree would contribute to MULTIPLE outputs
+        # This is NOT standard LightGBM architecture
+        return multi_task_predictions  # [N_samples, N_tasks]
+```
+
+#### Scope of the Problem
+
+**Affected Components:**
+
+1. **BaseMultiTaskModel.predict()** - Method signature exists but cannot work
+2. **All concrete model classes** - Inherit broken predict() method
+3. **Evaluation scripts** (`lightgbmmt_model_eval.py`) - Will fail at prediction time
+4. **Inference scripts** (`lightgbmmt_model_inference.py`) - Will fail at prediction time
+5. **ModelTrainer** (if implemented) - Cannot perform post-training evaluation
+
+**What DOES Work:**
+
+1. ✅ All training workflows - `train()` method fully functional
+2. ✅ TrainingState management - Checkpointing and resumption work
+3. ✅ TrainingConfig - Configuration management works
+4. ✅ Factory pattern - Model creation works
+5. ✅ Base class abstraction - Template method pattern works
+6. ✅ Integration with loss functions - Dependency injection works
+
+**What DOES NOT Work:**
+
+1. ❌ `predict()` method - Fundamentally broken
+2. ❌ Post-training evaluation - Requires predictions
+3. ❌ Model deployment - Cannot serve predictions
+4. ❌ Inference scripts - Cannot generate outputs
+5. ❌ Production use - Training works, inference doesn't
+
+#### Workarounds and Solutions
+
+**Option 1: Baseline Model Only (⚠️ Limited Multi-Task Benefits)**
+
+```python
+# Use BaselineModel which trains N independent models
+model = ModelFactory.create(
+    model_type='baseline',
+    config=config,
+    hyperparams=hyperparams
+)
+
+# Training works
+state = model.train(X_train, y_train, task_indices)
+
+# Inference works (but not really multi-task)
+predictions = model.predict(X_test)  # [N_samples, N_tasks]
+```
+
+**Pros:**
+- Works with standard LightGBM
+- Training and inference both functional
+- Easy to deploy
+
+**Cons:**
+- Not really multi-task learning (no information sharing)
+- Cannot use SharedTreesModel or MTGBMModel
+- Loses primary benefit of multi-task architecture
+
+**Option 2: Train Only, Deploy Separately (⚠️ Workaround)**
+
+```python
+# Train with multi-task benefits
+model = ModelFactory.create(
+    model_type='mtgbm',
+    config=config,
+    hyperparams=hyperparams
+)
+
+state = model.train(X_train, y_train, task_indices, X_val, y_val, task_indices_val)
+
+# Save individual task models from best epoch
+best_epoch = state.best_epoch
+for task_idx in range(config.num_tasks):
+    task_model = state.models.get((best_epoch, task_idx))
+    task_model.save_model(f'model_task_{task_idx}.txt')
+
+# Deploy each task model independently
+# Lose multi-task coordination at inference
+```
+
+**Option 3: Use lightgbmmt Package for Inference (✅ Full Functionality)**
+
+```python
+# Train with refactored code (benefits from improved architecture)
+model = ModelFactory.create(
+    model_type='mtgbm',
+    config=config,
+    hyperparams=hyperparams
+)
+
+state = model.train(X_train, y_train, task_indices, X_val, y_val, task_indices_val)
+
+# Convert to lightgbmmt package for inference
+from lightgbmmt.basic import Booster
+
+# Load models into lightgbmmt Booster
+# This requires custom integration code
+booster = convert_to_lightgbmmt_booster(state.models, config)
+
+# Multi-task prediction WORKS
+predictions = booster.predict(X_test)  # [N_samples, N_tasks] ✅
+```
+
+**Pros:**
+- Full multi-task training AND inference
+- Can use all three model types
+- Preserves all multi-task benefits
+
+**Cons:**
+- Requires lightgbmmt package (custom C++ fork)
+- Deployment complexity
+- Need conversion layer between architectures
+
+**Option 4: Remove predict() Method (✅ Honest Architecture)**
+
+```python
+class BaseMultiTaskModel(ABC):
+    """
+    Base class for multi-task model TRAINING ONLY.
+    
+    WARNING: This class does not support multi-task prediction
+    with standard LightGBM. Use separate model instances or
+    lightgbmmt package for inference.
+    """
+    
+    def train(self, ...):
+        """Train multi-task model - FULLY FUNCTIONAL"""
+        pass
+    
+    # predict() method REMOVED or raises NotImplementedError
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        raise NotImplementedError(
+            "Multi-task prediction not supported with standard LightGBM. "
+            "Use BaselineModel for independent predictions or lightgbmmt package "
+            "for true multi-task inference."
+        )
+```
+
+**Pros:**
+- Honest about capabilities
+- Prevents runtime failures with clear errors
+- Documents limitation explicitly
+
+**Cons:**
+- Less elegant API (training-only base class)
+- Requires documentation updates
+- May confuse users expecting full pipeline
+
+#### Recommended Approach
+
+**For Production Deployment:**
+
+1. **Use BaselineModel** if multi-task benefits not critical:
+   ```python
+   model = ModelFactory.create('baseline', config, hyperparams)
+   ```
+
+2. **OR train with refactored code, deploy with lightgbmmt**:
+   - Get architectural improvements during training
+   - Use custom package for inference
+   - Accept deployment complexity trade-off
+
+**For Research/Experimentation:**
+
+1. Continue using all three model types for training
+2. Acknowledge inference limitation
+3. Use lightgbmmt package when predictions needed
+4. Document the constraint clearly
+
+**For Future Development:**
+
+1. **Option A**: Port lightgbmmt C++ changes to new codebase
+2. **Option B**: Switch to different framework (PyTorch multi-task models)
+3. **Option C**: Implement post-processing layer that reconstructs multi-task predictions
+4. **Option D**: Accept limitation and focus on training-only use cases
+
+#### References to Related Analysis
+
+- **[LightGBMMT Package Architecture Critical Analysis](../4_analysis/2025-12-12_lightgbmmt_package_architecture_critical_analysis.md)** - **🚨 CRITICAL** - Technical deep dive
+- **[MTGBM Loss Function Refactoring Design](./mtgbm_models_refactoring_design.md)** - Companion document with loss function limitations
+- **[LightGBMMT Package Correspondence Analysis](../4_analysis/2025-12-10_lightgbmmt_package_correspondence_analysis.md)** - Implementation comparison
+- **[MTGBM Refactoring Functional Equivalence Analysis](../4_analysis/2025-12-10_mtgbm_refactoring_functional_equivalence_analysis.md)** - Training equivalence verification
+
+#### Summary: What This Means for the Refactoring
+
+**Successes:**
+1. ✅ Architectural patterns (template method, factory, strategy) work excellently
+2. ✅ Code quality dramatically improved (reduced duplication, better testing)
+3. ✅ Training pipeline fully functional with all enhancements
+4. ✅ Configuration management superior to legacy implementation
+5. ✅ Maintainability and extensibility significantly improved
+
+**Limitations:**
+1. ❌ `BaseMultiTaskModel.predict()` cannot work as designed with standard LightGBM
+2. ❌ SharedTreesModel and MTGBMModel cannot generate predictions
+3. ❌ Inference scripts incomplete (will fail at runtime)
+4. ⚠️ BaselineModel works but defeats multi-task purpose
+
+**Verdict:**
+
+The refactored model class architecture is **excellent for training** but **incomplete for production deployment** without either:
+- Accepting baseline-only approach (loses multi-task benefits)
+- Maintaining dependency on lightgbmmt package (deployment complexity)
+- Implementing alternative prediction strategy (future work)
+
+**Key Takeaways:**
+1. ✅ Training architecture is sound and valuable
+2. ❌ Inference architecture has fundamental gap
+3. ⚠️ Choose deployment strategy carefully based on requirements
+4. 🔄 Future work needed for complete end-to-end solution
+5. 📚 Document limitation clearly to set expectations
+
+---
+
 ## References
 
 ### Related Documents

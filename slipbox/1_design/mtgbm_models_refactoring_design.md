@@ -34,9 +34,10 @@ The design introduces fundamental software engineering patterns including abstra
 
 ## Related Documents
 
+- **⚠️ [MTGBM Refactoring: Critical Bugs Fixed](../4_analysis/2025-12-18_mtgbm_refactoring_critical_bugs_fixed.md)** - **CRITICAL: 7 bugs discovered during implementation (Dec 2025)**
+- **[MTGBM Multi-Task Learning Design](./mtgbm_multi_task_learning_design.md)** - **Updated with critical implementation details**
 - **[MTGBM Model Classes Refactoring Design](./mtgbm_model_classes_refactoring_design.md)** - Companion design for model class refactoring
 - **[MTGBM Models Optimization Analysis](../4_analysis/2025-11-11_mtgbm_models_optimization_analysis.md)** - Detailed analysis identifying optimization opportunities
-- **[MTGBM Multi-Task Learning Design](./mtgbm_multi_task_learning_design.md)** - Original MTGBM architecture and design
 - **[MTGBM Missing Features Recovery](../4_analysis/2025-11-13_mtgbm_missing_features_recovery.md)** - Recovery of missing implementation features
 - **[LightGBMMT Multi-Task Implementation Analysis](../4_analysis/2025-11-10_lightgbmmt_multi_task_implementation_analysis.md)** - Framework analysis
 - **[Best Practices](../0_developer_guide/best_practices.md)** - Development standards
@@ -357,8 +358,8 @@ class LossConfig(BaseModel):
     
     # Advanced options
     cache_predictions: bool = Field(
-        default=True,
-        description="Enable prediction caching for performance"
+        default=False,  # ⚠️ CRITICAL: Must be False due to LightGBM array reuse (Bug #2)
+        description="Enable prediction caching for performance (DEPRECATED - causes stale data)"
     )
     precompute_indices: bool = Field(
         default=True,
@@ -1737,6 +1738,208 @@ This refactoring design addresses critical issues in the MTGBM models implementa
 - **Production Ready**: Logging, monitoring, and comprehensive documentation
 
 This refactoring establishes a solid foundation for future MTGBM enhancements while maintaining production stability and backward compatibility.
+
+## Limitations and Architectural Constraints
+
+### Critical Limitation: Multi-Task Prediction Capability
+
+> ⚠️ **CRITICAL ARCHITECTURAL CONSTRAINT**
+> 
+> The refactored loss function implementation successfully trains multi-task models but has a **fundamental limitation at inference time** due to dependency on standard LightGBM.
+
+#### The Problem
+
+**Root Cause:** Standard LightGBM only supports **single-output predictions**, while multi-task learning requires **simultaneous multi-output predictions**.
+
+```python
+# Standard LightGBM prediction
+predictions = model.predict(X)  # Returns: [N_samples] - single output only
+
+# Required for multi-task
+predictions = model.predict(X)  # Need: [N_samples, N_tasks] - NOT SUPPORTED
+```
+
+**Legacy Implementation:**
+- Uses custom C++ fork of LightGBM (`lightgbmmt` package)
+- Custom fork modified to output multiple predictions per sample
+- Located in: `projects/pfw_lightgbmmt_legacy/dockers/mtgbm/lightgbmmt/`
+
+**Refactored Implementation:**
+- Uses standard LightGBM from PyPI (`lightgbm` package)
+- Only supports single-output predictions
+- Multi-task training works (custom loss functions supported)
+- Multi-task inference **DOES NOT WORK**
+
+#### Impact on Refactored Components
+
+**1. Loss Functions (This Document)**
+- ✅ **Training:** Fully functional
+  - Custom loss functions work with standard LightGBM
+  - Multi-task gradients/hessians computed correctly
+  - Weight adaptation strategies work as designed
+  - Knowledge distillation triggers properly
+
+- ❌ **Inference:** Not addressed by loss refactoring
+  - Loss functions only used during training
+  - No direct impact on prediction capability
+  - Evaluation during training works (uses training data labels)
+
+**2. Model Classes (Companion Document)**
+- ✅ **Training:** Fully functional
+  - All three model types train successfully
+  - State management works correctly
+  - Checkpointing and resumption work
+
+- ❌ **Inference:** Fundamentally broken
+  - `BaseMultiTaskModel.predict()` method exists but CANNOT work
+  - Standard LightGBM cannot output [N_samples, N_tasks]
+  - Evaluation scripts will fail at prediction time
+  - Inference scripts will fail at prediction time
+
+#### Why This Limitation Exists
+
+**Technical Reason:**
+```python
+# Standard LightGBM C++ core
+class Booster {
+    std::vector<double> Predict(const Dataset& data) {
+        // Returns single value per sample
+        // Architecture does not support multi-output
+        return single_predictions;
+    }
+};
+
+# Custom lightgbmmt C++ core  
+class Booster {
+    std::vector<std::vector<double>> Predict(const Dataset& data) {
+        // Modified to return multiple values per sample
+        // Custom fork with architectural changes
+        return multi_task_predictions;
+    }
+};
+```
+
+**Why Standard LightGBM Cannot Support Multi-Task Predictions:**
+1. **Tree Structure:** Each tree outputs single leaf value
+2. **Prediction Aggregation:** Sums single values across trees
+3. **API Contract:** All LightGBM APIs assume single output
+4. **Backward Compatibility:** Cannot break existing behavior
+
+#### Workarounds and Solutions
+
+**Option 1: Train Separate Models Per Task** (✅ Recommended for Production)
+```python
+# Train N separate models instead of one multi-task model
+models = []
+for task_idx in range(num_tasks):
+    model = lgb.train(params, train_data_task[task_idx], ...)
+    models.append(model)
+
+# Inference: Call each model separately
+predictions = np.zeros((n_samples, num_tasks))
+for task_idx, model in enumerate(models):
+    predictions[:, task_idx] = model.predict(X)
+```
+
+**Benefits:**
+- Works with standard LightGBM
+- Production-ready (no custom packages)
+- Easy to deploy and maintain
+- Compatible with refactored architecture
+
+**Limitations:**
+- No information sharing between tasks during training
+- Cannot use adaptive weight loss or knowledge distillation
+- Essentially baseline model approach
+
+**Option 2: Migrate Back to lightgbmmt Package** (⚠️ Requires Legacy Dependency)
+```python
+# Use custom lightgbmmt package
+from lightgbmmt.engine import train
+from lightgbmmt.basic import Booster
+
+# Train with custom loss (refactored loss functions still work)
+booster = train(
+    params=params,
+    train_set=train_set,
+    fobj=refactored_loss_function.objective,  # ✅ Compatible
+    ...
+)
+
+# Multi-task prediction WORKS with custom package
+predictions = booster.predict(X)  # Returns [N_samples, N_tasks]
+```
+
+**Benefits:**
+- Full multi-task functionality
+- Can use refactored loss functions
+- Supports all multi-task features
+
+**Limitations:**
+- Dependency on custom C++ fork
+- Must build/maintain custom package
+- Not available on PyPI
+- Deployment complexity
+
+**Option 3: Complete the Migration** (🔄 Future Work)
+```python
+# Implement true multi-task prediction in refactored code
+# Requires either:
+# A) Port lightgbmmt C++ changes to new codebase
+# B) Implement multi-task output layer in Python
+# C) Use different framework (XGBoost, PyTorch)
+```
+
+#### Recommended Approach
+
+**For Production Systems:**
+1. **Use Option 1** (separate models) for immediate deployment
+2. Use refactored training code for improved maintainability
+3. Accept no information sharing between tasks
+4. Get production benefits of standard LightGBM
+
+**For Research/Experimentation:**
+1. **Use Option 2** (lightgbmmt package) to preserve multi-task capabilities
+2. Integrate refactored loss functions with legacy package
+3. Maintain custom C++ fork for multi-task predictions
+4. Plan migration path when better solution emerges
+
+**Migration Path Forward:**
+1. Document the limitation clearly (this section)
+2. Provide working examples for both options
+3. Evaluate alternative frameworks (XGBoost, Neural Networks)
+4. Consider porting lightgbmmt changes if justified by business value
+
+#### References to Related Analysis
+
+- **[LightGBMMT Package Architecture Critical Analysis](../4_analysis/2025-12-12_lightgbmmt_package_architecture_critical_analysis.md)** - **🚨 CRITICAL** - Detailed technical analysis
+- **[LightGBMMT Package Correspondence Analysis](../4_analysis/2025-12-10_lightgbmmt_package_correspondence_analysis.md)** - Implementation comparison
+- **[MTGBM Refactoring Functional Equivalence Analysis](../4_analysis/2025-12-10_mtgbm_refactoring_functional_equivalence_analysis.md)** - Training equivalence verification
+
+#### Decision Matrix
+
+| Requirement | Option 1: Separate Models | Option 2: lightgbmmt Package | Option 3: Complete Migration |
+|-------------|---------------------------|------------------------------|------------------------------|
+| **Multi-task training** | ❌ No sharing | ✅ Full support | ✅ Full support |
+| **Multi-task prediction** | ✅ Works (separate) | ✅ Native support | ✅ Native support |
+| **Production ready** | ✅ Standard packages | ⚠️ Custom build | 🔄 Future |
+| **Refactored loss functions** | ⚠️ Limited benefit | ✅ Full compatibility | ✅ Full compatibility |
+| **Maintenance burden** | ✅ Low | ⚠️ High (C++) | 🔄 TBD |
+| **Deployment complexity** | ✅ Simple | ⚠️ Complex | 🔄 TBD |
+| **Performance** | ✅ Good | ✅ Good | 🔄 TBD |
+
+### Summary
+
+The refactored loss function implementation is **architecturally sound and fully functional for training**, but inherits a fundamental limitation from standard LightGBM's single-output prediction architecture. This limitation does not affect the loss function refactoring directly but impacts the overall multi-task learning pipeline at inference time.
+
+**Key Takeaways:**
+1. ✅ Refactored loss functions work correctly for training
+2. ✅ All optimization improvements and code quality gains are preserved
+3. ❌ Multi-task prediction requires either separate models OR legacy package
+4. ⚠️ Production deployment requires careful architecture choice
+5. 🔄 Future work needed for complete multi-task inference solution
+
+---
 
 ## References
 
