@@ -77,8 +77,8 @@ Model Architecture Designs
 - [XGBoost Semi-Supervised Learning Pipeline Design](../1_design/xgboost_semi_supervised_learning_pipeline_design.md)
 
 **Related Analysis:**
-- [XGBoost Inference Latency Analysis](../3_analysis/xgboost_inference_latency_analysis.md)
-- [XGBoost Inference Latency Optimization Analysis](../3_analysis/2025-11-20_xgboost_inference_latency_optimization_analysis.md)
+- [XGBoost Inference Latency Analysis](../4_analysis/xgboost_inference_latency_analysis.md)
+- [XGBoost Inference Latency Optimization Analysis](../4_analysis/2025-11-20_xgboost_inference_latency_optimization_analysis.md)
 
 **Key Features:**
 - Gradient boosting decision trees
@@ -126,17 +126,17 @@ Model Architecture Designs
 - [LightGBM-MT Model Inference Design](../1_design/lightgbmmt_model_inference_design.md)
 
 **Related Analysis:**
-- [MTGBM Refactoring COE](../3_analysis/2025-12-19_mtgbm_refactoring_coe.md) - **📋 COE** - Comprehensive Correction of Error document analyzing complete refactoring failure (2 failure classes: dependency + 12 bugs)
-- [LightGBMMT Package Architecture Critical Analysis](../3_analysis/2025-12-12_lightgbmmt_package_architecture_critical_analysis.md) - **🚨 CRITICAL** - Custom LightGBM fork dependency
-- [Legacy LightGBMMT Package Integration Analysis](../3_analysis/2025-12-12_legacy_lightgbmmt_package_integration_analysis.md) - **NEW** - C++ modifications, Python wrapper extensions, and integration strategy
-- [MTGBM Hyperparameters Usage Analysis](../3_analysis/2025-12-19_mtgbm_hyperparameters_usage_analysis.md) - **NEW** - Comprehensive field-by-field hyperparameter usage analysis
-- [MTGBM Training and Evaluation Line-by-Line Comparison](../3_analysis/2025-12-19_mtgbm_training_evaluation_line_by_line_comparison.md) - **NEW** - Comprehensive line-by-line comparison of training, evaluation, and metric reporting
-- [MTGBM Refactoring Critical Bugs Fixed](../3_analysis/2025-12-18_mtgbm_refactoring_critical_bugs_fixed.md) - **NEW** - Critical bug fixes in refactored implementation
-- [MTGBM Implementation Analysis](../3_analysis/2025-11-10_lightgbmmt_multi_task_implementation_analysis.md)
-- [MTGBM Refactoring Functional Equivalence Analysis](../3_analysis/2025-12-10_mtgbm_refactoring_functional_equivalence_analysis.md) - **NEW** - Legacy vs refactored loss function comparison
-- [LightGBMMT Package Correspondence Analysis](../3_analysis/2025-12-10_lightgbmmt_package_correspondence_analysis.md) - **NEW** - Training script architecture analysis
-- [MTGBM Model Optimization Analysis](../3_analysis/2025-11-11_mtgbm_models_optimization_analysis.md)
-- [MTGBM Pipeline Reuseablity Analysis](../3_analysis/2025-11-11_mtgbm_pipeline_reusability_analysis.md)
+- [MTGBM Refactoring COE](../4_analysis/2025-12-19_mtgbm_refactoring_coe.md) - **📋 COE** - Comprehensive Correction of Error document analyzing complete refactoring failure (2 failure classes: dependency + 12 bugs)
+- [LightGBMMT Package Architecture Critical Analysis](../4_analysis/2025-12-12_lightgbmmt_package_architecture_critical_analysis.md) - **🚨 CRITICAL** - Custom LightGBM fork dependency
+- [Legacy LightGBMMT Package Integration Analysis](../4_analysis/2025-12-12_legacy_lightgbmmt_package_integration_analysis.md) - **NEW** - C++ modifications, Python wrapper extensions, and integration strategy
+- [MTGBM Hyperparameters Usage Analysis](../4_analysis/2025-12-19_mtgbm_hyperparameters_usage_analysis.md) - **NEW** - Comprehensive field-by-field hyperparameter usage analysis
+- [MTGBM Training and Evaluation Line-by-Line Comparison](../4_analysis/2025-12-19_mtgbm_training_evaluation_line_by_line_comparison.md) - **NEW** - Comprehensive line-by-line comparison of training, evaluation, and metric reporting
+- [MTGBM Refactoring Critical Bugs Fixed](../4_analysis/2025-12-18_mtgbm_refactoring_critical_bugs_fixed.md) - **NEW** - Critical bug fixes in refactored implementation
+- [MTGBM Implementation Analysis](../4_analysis/2025-11-10_lightgbmmt_multi_task_implementation_analysis.md)
+- [MTGBM Refactoring Functional Equivalence Analysis](../4_analysis/2025-12-10_mtgbm_refactoring_functional_equivalence_analysis.md) - **NEW** - Legacy vs refactored loss function comparison
+- [LightGBMMT Package Correspondence Analysis](../4_analysis/2025-12-10_lightgbmmt_package_correspondence_analysis.md) - **NEW** - Training script architecture analysis
+- [MTGBM Model Optimization Analysis](../4_analysis/2025-11-11_mtgbm_models_optimization_analysis.md)
+- [MTGBM Pipeline Reuseablity Analysis](../4_analysis/2025-11-11_mtgbm_pipeline_reusability_analysis.md)
 
 **Key Features:**
 - Multi-task learning framework
@@ -279,10 +279,10 @@ Model Architecture Designs
 - [TSA Lightning Refactoring Design](../1_design/tsa_lightning_refactoring_design.md) - **NEW** - Algorithm-preserving refactoring plan and implementation status
 
 **Related Analysis:**
-- [Temporal Self-Attention Scripts Analysis](../3_analysis/temporal_self_attention_scripts_analysis.md) - Comprehensive TSA implementation analysis
-- [TSA Cursus Step Equivalency Analysis](../3_analysis/2025-10-20_tsa_cursus_step_equivalency_analysis.md) - TSA pipeline vs Cursus framework comparison
-- [TSA SageMaker Pipeline DAG Analysis](../3_analysis/2025-10-20_tsa_sagemaker_pipeline_dag_analysis.md) - TSA pipeline DAG structure and execution
-- [TSA Lightning Refactoring Line-by-Line Comparison](../3_analysis/2025-12-20_tsa_lightning_refactoring_line_by_line_comparison.md) - **NEW** - Comprehensive line-by-line comparison of legacy vs refactored implementations
+- [Temporal Self-Attention Scripts Analysis](../4_analysis/temporal_self_attention_scripts_analysis.md) - Comprehensive TSA implementation analysis
+- [TSA Cursus Step Equivalency Analysis](../4_analysis/2025-10-20_tsa_cursus_step_equivalency_analysis.md) - TSA pipeline vs Cursus framework comparison
+- [TSA SageMaker Pipeline DAG Analysis](../4_analysis/2025-10-20_tsa_sagemaker_pipeline_dag_analysis.md) - TSA pipeline DAG structure and execution
+- [TSA Lightning Refactoring Line-by-Line Comparison](../4_analysis/2025-12-20_tsa_lightning_refactoring_line_by_line_comparison.md) - **NEW** - Comprehensive line-by-line comparison of legacy vs refactored implementations
 
 **Key Features:**
 - Temporal attention mechanisms
@@ -291,6 +291,32 @@ Model Architecture Designs
 - Time-aware representations
 - Algorithm-preserving refactoring (Phase 1 complete)
 - 9 focal loss variants for training flexibility
+
+### 3.3 Names3Risk Model (Fraud Detection)
+
+**Code Locations:**
+- `projects/names3risk_legacy/fetch_data.py` - Data collection via Secure AI Sandbox
+- `projects/names3risk_legacy/train.py` - Main training loop
+- `projects/names3risk_legacy/lstm2risk.py` - LSTM-based architecture (default)
+- `projects/names3risk_legacy/transformer2risk.py` - Transformer-based architecture (alternative)
+- `projects/names3risk_legacy/tokenizer.py` - Custom BPE tokenizer with compression tuning
+- `projects/names3risk_legacy/dataset.py` - PyTorch dataset implementations
+
+**Related Design Docs:**
+- [Names3Risk Model Design](../1_design/names3risk_model_design.md) - **PRIMARY** - Multi-modal fraud detection architecture
+
+**Related Analysis:**
+- [Names3Risk Cursus Step Equivalency Analysis](../4_analysis/2025-12-31_names3risk_cursus_step_equivalency_analysis.md) - **NEW** - Names3Risk pipeline vs Cursus framework comparison
+
+**Key Features:**
+- Multi-modal architecture (text + tabular fusion)
+- First-time buyer fraud detection
+- Two model variants: LSTM2Risk and Transformer2Risk
+- Custom BPE tokenizer with automatic vocab size tuning
+- Attention pooling for text representation
+- Multi-region support (NA, EU, FE)
+- Binary classification with AUC-ROC optimization
+- Late fusion strategy for modality integration
 
 ---
 
@@ -413,9 +439,9 @@ Model Architecture Designs
 ### 8.1 Inference Optimization
 
 **Related Analysis:**
-- [XGBoost Inference Latency Analysis](../3_analysis/xgboost_inference_latency_analysis.md)
-- [XGBoost Inference Latency Optimization Analysis](../3_analysis/2025-11-20_xgboost_inference_latency_optimization_analysis.md)
-- [Processor Optimization Summary](../3_analysis/processor_optimization_summary.md)
+- [XGBoost Inference Latency Analysis](../4_analysis/xgboost_inference_latency_analysis.md)
+- [XGBoost Inference Latency Optimization Analysis](../4_analysis/2025-11-20_xgboost_inference_latency_optimization_analysis.md)
+- [Processor Optimization Summary](../4_analysis/processor_optimization_summary.md)
 
 **Related Implementation Plans:**
 - [Inference Latency Optimization Implementation Plan](../2_project_planning/2025-11-20_inference_latency_optimization_implementation_plan.md)
@@ -706,6 +732,6 @@ When adding a new model architecture:
 1. Create design document in `slipbox/1_design/`
 2. Add implementation in appropriate `projects/` directory
 3. Update this index with links and descriptions
-4. Add analysis documents to `slipbox/3_analysis/` if applicable
+4. Add analysis documents to `slipbox/4_analysis/` if applicable
 5. Create implementation plan in `slipbox/2_project_planning/` if needed
 6. Update related entry points for cross-referencing
