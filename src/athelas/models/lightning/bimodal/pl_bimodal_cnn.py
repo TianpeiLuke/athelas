@@ -217,7 +217,7 @@ class BimodalCNN(pl.LightningModule):
         sample_batch: Dict[str, Union[torch.Tensor, List]],
     ):
         class BimodalCNNONNXWrapper(nn.Module):
-            def __init__(self, model: MultimodalCNN):
+            def __init__(self, model: BimodalCNN):
                 super().__init__()
                 self.model = model
                 self.text_key = model.text_name
@@ -234,7 +234,7 @@ class BimodalCNN(pl.LightningModule):
 
         model_to_export = self.module if isinstance(self, FSDP) else self
         model_to_export = model_to_export.to("cpu")
-        wrapper = MultimodalCNNONNXWrapper(model_to_export).to("cpu").eval()
+        wrapper = BimodalCNNONNXWrapper(model_to_export).to("cpu").eval()
 
         input_names = [self.text_name]
         input_tensors = [sample_batch[self.text_name].to("cpu")]

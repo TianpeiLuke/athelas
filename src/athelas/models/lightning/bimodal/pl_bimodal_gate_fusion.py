@@ -327,7 +327,7 @@ class BimodalBertGateFusion(pl.LightningModule):
         sample_batch: Dict[str, Union[torch.Tensor, List]],
     ):
         class BimodalBertONNXWrapper(nn.Module):
-            def __init__(self, model: MultimodalBertGateFusion):
+            def __init__(self, model: BimodalBertGateFusion):
                 super().__init__()
                 self.model = model
                 self.text_key = model.text_name
@@ -355,7 +355,7 @@ class BimodalBertGateFusion(pl.LightningModule):
         # Unwrap from FSDP if needed
         model_to_export = self.module if isinstance(self, FSDP) else self
         model_to_export = model_to_export.to("cpu")
-        wrapper = MultimodalBertONNXWrapper(model_to_export).to("cpu").eval()
+        wrapper = BimodalBertONNXWrapper(model_to_export).to("cpu").eval()
 
         # === Prepare input tensor list ===
         input_names = [self.text_name, self.text_attention_mask]
