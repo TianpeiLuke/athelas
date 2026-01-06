@@ -16,10 +16,10 @@ Components organized by function:
 - pooling: Pooling operations (attention pooling, sequence pooling, etc.)
 """
 
-from .attention import AttentionHead, MultiHeadAttention
-from .pooling import AttentionPooling
-from .feedforward import MLPBlock, ResidualBlock
-from .embeddings import TabularEmbedding, combine_tabular_fields
+from .attention import AttentionHead, MultiHeadAttention, TemporalMultiheadAttention
+from .pooling import AttentionPooling, FeatureAggregation, compute_fm_parallel
+from .feedforward import MLPBlock, ResidualBlock, MixtureOfExperts
+from .embeddings import TimeEncode, TabularEmbedding, combine_tabular_fields
 from .blocks import (
     TransformerBlock,
     TransformerEncoder,
@@ -29,6 +29,11 @@ from .blocks import (
     BertEncoder,
     get_bert_config,
     create_bert_optimizer_groups,
+    # TSA-specific composite blocks
+    AttentionLayer,
+    AttentionLayerPreNorm,
+    OrderAttentionModule,
+    FeatureAttentionModule,
 )
 from .schedulers import (
     create_bert_scheduler,
@@ -41,7 +46,7 @@ from .fusion import (
     CrossAttentionFusion,
     BidirectionalCrossAttention,
     GateFusion,
-    MixtureOfExperts,
+    ExpertRoutingFusion,
     validate_modality_features,
 )
 
@@ -49,12 +54,17 @@ __all__ = [
     # Attention mechanisms
     "AttentionHead",
     "MultiHeadAttention",
+    "TemporalMultiheadAttention",
     # Pooling
     "AttentionPooling",
+    "FeatureAggregation",
+    "compute_fm_parallel",
     # Feedforward networks
     "MLPBlock",
     "ResidualBlock",
+    "MixtureOfExperts",
     # Embeddings
+    "TimeEncode",
     "TabularEmbedding",
     "combine_tabular_fields",
     # Composite blocks (encoders)
@@ -66,6 +76,11 @@ __all__ = [
     "BertEncoder",
     "get_bert_config",
     "create_bert_optimizer_groups",
+    # TSA-specific composite blocks
+    "AttentionLayer",
+    "AttentionLayerPreNorm",
+    "OrderAttentionModule",
+    "FeatureAttentionModule",
     # Schedulers
     "create_bert_scheduler",
     "create_warmup_scheduler",
@@ -76,6 +91,6 @@ __all__ = [
     "CrossAttentionFusion",
     "BidirectionalCrossAttention",
     "GateFusion",
-    "MixtureOfExperts",
+    "ExpertRoutingFusion",
     "validate_modality_features",
 ]

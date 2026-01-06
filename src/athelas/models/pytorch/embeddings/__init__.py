@@ -15,9 +15,8 @@ Planned (from design document):
 - FeatureEmbedding: Feature-level embeddings
 """
 
+from .temporal_encoding import TimeEncode
 from .tabular_embedding import TabularEmbedding, combine_tabular_fields
 
-__all__ = [
-    "TabularEmbedding",
-    "combine_tabular_fields",
-]
+
+__all__ = ["TabularEmbedding", "combine_tabular_fields", "TimeEncode"]

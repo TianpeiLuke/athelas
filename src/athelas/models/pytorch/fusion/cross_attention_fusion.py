@@ -22,7 +22,7 @@ enhanced representations that incorporate cross-modal information.
 Input:
   - text_seq: (B, 1, H) or (B, H) - Text features
   - tab_seq: (B, 1, H) or (B, H) - Tabular features
-  
+
 Output:
   - text_out: (B, 1, H) - Enhanced text features
   - tab_out: (B, 1, H) - Enhanced tabular features
@@ -68,16 +68,16 @@ from typing import Tuple
 class CrossAttentionFusion(nn.Module):
     """
     Simple bidirectional cross-attention for two modalities.
-    
+
     Allows text and tabular modalities to exchange information through
     bidirectional attention. Each modality attends to the other, creating
     enhanced representations.
     """
-    
+
     def __init__(self, hidden_dim: int, num_heads: int = 4):
         """
         Initialize CrossAttentionFusion.
-        
+
         Args:
             hidden_dim: Dimension of input features (must be same for both modalities)
             num_heads: Number of attention heads (default: 4)
@@ -85,61 +85,47 @@ class CrossAttentionFusion(nn.Module):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
-        
+
         # Text queries attend to tabular keys/values
         self.text2tab = nn.MultiheadAttention(
-            embed_dim=hidden_dim, 
-            num_heads=num_heads, 
-            batch_first=True
+            embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
         )
-        
+
         # Tabular queries attend to text keys/values
         self.tab2text = nn.MultiheadAttention(
-            embed_dim=hidden_dim, 
-            num_heads=num_heads, 
-            batch_first=True
+            embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
         )
-        
+
         # Layer normalization for residual connections
         self.text_norm = nn.LayerNorm(hidden_dim)
         self.tab_norm = nn.LayerNorm(hidden_dim)
 
     def forward(
-        self, 
-        text_seq: torch.Tensor, 
-        tab_seq: torch.Tensor
+        self, text_seq: torch.Tensor, tab_seq: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Apply bidirectional cross-attention between text and tabular modalities.
-        
+
         Args:
             text_seq: (B, L, H) - Text sequence features
             tab_seq: (B, L, H) - Tabular sequence features
-            
+
         Returns:
             text_out: (B, L, H) - Enhanced text features
             tab_out: (B, L, H) - Enhanced tabular features
         """
         # Text attends to tabular
-        t2t_out, _ = self.text2tab(
-            query=text_seq, 
-            key=tab_seq, 
-            value=tab_seq
-        )
+        t2t_out, _ = self.text2tab(query=text_seq, key=tab_seq, value=tab_seq)
         # Residual connection + layer norm
         text_out = self.text_norm(text_seq + t2t_out)
-        
+
         # Tabular attends to enhanced text
-        tab2_out, _ = self.tab2text(
-            query=tab_seq, 
-            key=text_out, 
-            value=text_out
-        )
+        tab2_out, _ = self.tab2text(query=tab_seq, key=text_out, value=text_out)
         # Residual connection + layer norm
         tab_out = self.tab_norm(tab_seq + tab2_out)
-        
+
         return text_out, tab_out
-    
+
     def __repr__(self) -> str:
         return (
             f"CrossAttentionFusion(hidden_dim={self.hidden_dim}, "

@@ -29,7 +29,7 @@ that's effective for text classification and sequence encoding.
 Input:
   - x: (B, L, D) - Sequence features, OR
   - x: (B, L) - Token IDs if vocab_size provided
-  
+
 Output:
   - encoded: (B, output_dim) or (B, num_channels[-1] * len(kernel_sizes)) - Encoded features
 
@@ -105,11 +105,11 @@ from typing import List, Optional
 class CNNEncoder(nn.Module):
     """
     Multi-kernel 1D CNN encoder for sequential data.
-    
+
     Encodes sequences using parallel convolutional branches with different
     kernel sizes, then concatenates results for multi-scale representation.
     """
-    
+
     def __init__(
         self,
         input_dim: int = None,
@@ -124,7 +124,7 @@ class CNNEncoder(nn.Module):
     ):
         """
         Initialize CNNEncoder.
-        
+
         Args:
             input_dim: Input feature dimension (required if vocab_size not provided)
             kernel_sizes: List of kernel sizes for parallel convs (default: [3, 5, 7])
@@ -137,7 +137,7 @@ class CNNEncoder(nn.Module):
             max_seq_len: Maximum sequence length for computing conv dimensions
         """
         super().__init__()
-        
+
         # Handle embedding layer
         if vocab_size is not None:
             if embedding_dim is None:
@@ -149,43 +149,42 @@ class CNNEncoder(nn.Module):
                 raise ValueError("input_dim required when vocab_size not provided")
             self.embeddings = None
             self.input_dim = input_dim
-        
+
         # Default kernel sizes and channels
         self.kernel_sizes = kernel_sizes or [3, 5, 7]
         self.num_channels = num_channels or [100, 100]
         self.num_layers = num_layers
         self.max_seq_len = max_seq_len
         self.dropout_p = dropout
-        
+
         # Build parallel conv branches
-        self.convs = nn.ModuleList([
-            self._build_conv_branch(k) for k in self.kernel_sizes
-        ])
-        
+        self.convs = nn.ModuleList(
+            [self._build_conv_branch(k) for k in self.kernel_sizes]
+        )
+
         # Output dimension after concatenating all branches
         self.features_dim = self.num_channels[-1] * len(self.kernel_sizes)
-        
+
         # Optional output projection
         if output_dim is not None:
             self.projection = nn.Sequential(
-                nn.Dropout(dropout),
-                nn.Linear(self.features_dim, output_dim)
+                nn.Dropout(dropout), nn.Linear(self.features_dim, output_dim)
             )
             self.output_dim = output_dim
         else:
             self.projection = None
             self.output_dim = self.features_dim
-    
+
     def _build_conv_branch(self, kernel_size: int) -> nn.Module:
         """
         Build a single convolutional branch with given kernel size.
-        
+
         Each branch has num_layers of: Conv1d → ReLU → MaxPool
         Final layer pools to single value.
         """
         layers = []
         input_channels = [self.input_dim] + self.num_channels[:-1]
-        
+
         # Compute output dimension after all convolutions
         seq_len = self.max_seq_len
         for i in range(self.num_layers):
@@ -194,14 +193,14 @@ class CNNEncoder(nn.Module):
                 nn.Conv1d(
                     in_channels=input_channels[i],
                     out_channels=self.num_channels[i],
-                    kernel_size=kernel_size
+                    kernel_size=kernel_size,
                 )
             )
             layers.append(nn.ReLU())
-            
+
             # Update sequence length after conv
             seq_len = seq_len - kernel_size + 1
-            
+
             # MaxPool (adaptive on last layer to pool to single value)
             if i < self.num_layers - 1:
                 # Intermediate layers: stride pooling
@@ -211,47 +210,49 @@ class CNNEncoder(nn.Module):
                 # Last layer: pool to single value
                 # Use adaptive pooling for variable sequence lengths
                 layers.append(nn.AdaptiveMaxPool1d(1))
-        
+
         return nn.Sequential(*layers)
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Encode input sequences.
-        
+
         Args:
             x: (B, L, D) - Sequence features, OR
                (B, L) - Token IDs if embeddings provided
-            
+
         Returns:
             encoded: (B, output_dim) - Encoded representations
         """
         # Apply embeddings if provided
         if self.embeddings is not None:
             x = self.embeddings(x)  # (B, L, D)
-        
+
         # Reshape for Conv1d: (B, L, D) → (B, D, L)
         x = x.permute(0, 2, 1)
-        
+
         # Apply parallel conv branches
         branch_outputs = []
         for conv in self.convs:
             out = conv(x)  # (B, C, 1)
             out = out.squeeze(2)  # (B, C)
             branch_outputs.append(out)
-        
+
         # Concatenate all branches
         features = torch.cat(branch_outputs, dim=1)  # (B, C * num_kernels)
-        
+
         # Optional projection
         if self.projection is not None:
             encoded = self.projection(features)
         else:
             encoded = features
-        
+
         return encoded
-    
+
     def __repr__(self) -> str:
-        embed_str = f"vocab={self.embeddings.num_embeddings}, " if self.embeddings else ""
+        embed_str = (
+            f"vocab={self.embeddings.num_embeddings}, " if self.embeddings else ""
+        )
         return (
             f"CNNEncoder({embed_str}"
             f"kernels={self.kernel_sizes}, "
@@ -266,36 +267,36 @@ def compute_cnn_output_length(
     kernel_size: int,
     num_layers: int,
     stride: int = 1,
-    padding: int = 0
+    padding: int = 0,
 ) -> int:
     """
     Utility to compute output sequence length after CNN layers.
-    
+
     Useful for understanding how sequence length changes through the network.
-    
+
     Args:
         input_length: Initial sequence length
         kernel_size: Convolutional kernel size
         num_layers: Number of conv + pool layers
         stride: Convolution stride (default: 1)
         padding: Convolution padding (default: 0)
-        
+
     Returns:
         output_length: Final sequence length
-        
+
     Example:
         >>> # After 2 layers of conv(k=3) + maxpool(k=3)
         >>> compute_cnn_output_length(512, kernel_size=3, num_layers=2)
         56
     """
     length = input_length
-    
+
     for i in range(num_layers):
         # After convolution
         length = (length + 2 * padding - kernel_size) // stride + 1
-        
+
         # After max pooling (except last layer uses adaptive pooling)
         if i < num_layers - 1:
             length = (length - kernel_size) // kernel_size + 1
-    
+
     return length

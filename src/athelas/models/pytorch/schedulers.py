@@ -48,10 +48,10 @@ def create_bert_scheduler(
 ) -> LRScheduler:
     """
     Create learning rate scheduler for BERT-style training.
-    
+
     Supports various warmup + decay strategies commonly used for
     transformer fine-tuning and pretraining.
-    
+
     Args:
         optimizer: PyTorch optimizer
         num_training_steps: Total number of training steps
@@ -60,14 +60,14 @@ def create_bert_scheduler(
             - "linear": Linear decay to 0 (default, standard for BERT)
             - "constant": Constant LR after warmup
             - "cosine": Cosine annealing after warmup
-            
+
     Returns:
         scheduler: Learning rate scheduler
-        
+
     Example:
         >>> from torch.optim import AdamW
         >>> optimizer = AdamW(model.parameters(), lr=2e-5)
-        >>> 
+        >>>
         >>> # Standard BERT schedule: warmup + linear decay
         >>> scheduler = create_bert_scheduler(
         ...     optimizer,
@@ -75,7 +75,7 @@ def create_bert_scheduler(
         ...     num_warmup_steps=1000,
         ...     schedule_type="linear"
         ... )
-        >>> 
+        >>>
         >>> # In training loop
         >>> for batch in dataloader:
         ...     loss = model(batch)
@@ -85,30 +85,29 @@ def create_bert_scheduler(
         ...     optimizer.zero_grad()
     """
     schedule_type = schedule_type.lower()
-    
+
     if schedule_type == "linear":
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=num_warmup_steps,
-            num_training_steps=num_training_steps
+            num_training_steps=num_training_steps,
         )
     elif schedule_type == "constant":
         scheduler = get_constant_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=num_warmup_steps
+            optimizer, num_warmup_steps=num_warmup_steps
         )
     elif schedule_type == "cosine":
         scheduler = get_cosine_schedule_with_warmup(
             optimizer,
             num_warmup_steps=num_warmup_steps,
-            num_training_steps=num_training_steps
+            num_training_steps=num_training_steps,
         )
     else:
         raise ValueError(
             f"Unknown schedule_type: {schedule_type}. "
             f"Supported: 'linear', 'constant', 'cosine'"
         )
-    
+
     return scheduler
 
 
@@ -120,18 +119,18 @@ def create_warmup_scheduler(
 ) -> LRScheduler:
     """
     Create scheduler with warmup period.
-    
+
     Convenience wrapper around create_bert_scheduler with clearer naming.
-    
+
     Args:
         optimizer: PyTorch optimizer
         warmup_steps: Number of warmup steps
         schedule_after_warmup: Schedule type after warmup ("linear", "constant", "cosine")
         total_steps: Total training steps (required for linear/cosine)
-        
+
     Returns:
         scheduler: Learning rate scheduler
-        
+
     Example:
         >>> # Warmup for 1000 steps, then linear decay
         >>> scheduler = create_warmup_scheduler(
@@ -145,12 +144,12 @@ def create_warmup_scheduler(
         raise ValueError(
             f"total_steps required for schedule_after_warmup='{schedule_after_warmup}'"
         )
-    
+
     return create_bert_scheduler(
         optimizer,
         num_training_steps=total_steps or warmup_steps,  # For constant schedule
         num_warmup_steps=warmup_steps,
-        schedule_type=schedule_after_warmup
+        schedule_type=schedule_after_warmup,
     )
 
 
@@ -162,19 +161,19 @@ def get_scheduler_config_for_lightning(
 ) -> dict:
     """
     Create scheduler configuration dict for PyTorch Lightning.
-    
+
     PyTorch Lightning requires schedulers to be returned as a dict
     with specific keys from configure_optimizers().
-    
+
     Args:
         scheduler: PyTorch learning rate scheduler
         interval: When to step the scheduler ("step" or "epoch")
         frequency: How often to step (default: 1)
         monitor: Metric to monitor for ReduceLROnPlateau (optional)
-        
+
     Returns:
         config: Scheduler configuration dict for Lightning
-        
+
     Example:
         >>> class MyModel(pl.LightningModule):
         ...     def configure_optimizers(self):
@@ -194,35 +193,32 @@ def get_scheduler_config_for_lightning(
         "interval": interval,  # "step" or "epoch"
         "frequency": frequency,
     }
-    
+
     if monitor is not None:
         config["monitor"] = monitor
-    
+
     return config
 
 
-def calculate_warmup_steps(
-    total_steps: int,
-    warmup_ratio: float = 0.1
-) -> int:
+def calculate_warmup_steps(total_steps: int, warmup_ratio: float = 0.1) -> int:
     """
     Calculate number of warmup steps from ratio.
-    
+
     Common practice is to use 10% of total steps for warmup.
-    
+
     Args:
         total_steps: Total number of training steps
         warmup_ratio: Fraction of steps to use for warmup (default: 0.1 = 10%)
-        
+
     Returns:
         warmup_steps: Number of warmup steps
-        
+
     Example:
         >>> # 10% warmup of 10000 steps = 1000 steps
         >>> warmup_steps = calculate_warmup_steps(10000, warmup_ratio=0.1)
         >>> print(warmup_steps)
         1000
-        
+
         >>> # 5% warmup
         >>> warmup_steps = calculate_warmup_steps(10000, warmup_ratio=0.05)
         >>> print(warmup_steps)

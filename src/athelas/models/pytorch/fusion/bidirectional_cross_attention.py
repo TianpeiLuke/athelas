@@ -4,9 +4,9 @@ Bidirectional Cross-Attention
 Advanced bidirectional cross-attention with feed-forward networks for multi-modal fusion.
 
 **Core Concept:**
-A sophisticated bidirectional cross-attention mechanism that allows two modalities 
-(e.g., primary text and secondary text) to exchange information. Unlike simple 
-cross-attention, this includes feed-forward networks for additional processing 
+A sophisticated bidirectional cross-attention mechanism that allows two modalities
+(e.g., primary text and secondary text) to exchange information. Unlike simple
+cross-attention, this includes feed-forward networks for additional processing
 and multiple normalization layers for better training stability.
 
 **Architecture:**
@@ -26,7 +26,7 @@ and multiple normalization layers for better training stability.
 Input:
   - primary: (B, d_model) - Primary modality features
   - secondary: (B, d_model) - Secondary modality features
-  
+
 Output:
   - primary_final: (B, d_model) - Enhanced primary features
   - secondary_final: (B, d_model) - Enhanced secondary features
@@ -52,8 +52,8 @@ from athelas.models.pytorch.fusion import BidirectionalCrossAttention
 
 # Create advanced fusion module
 fusion = BidirectionalCrossAttention(
-    d_model=256, 
-    num_heads=8, 
+    d_model=256,
+    num_heads=8,
     dropout=0.1
 )
 
@@ -62,7 +62,7 @@ primary_text = torch.randn(32, 256)    # (batch, dim)
 secondary_text = torch.randn(32, 256)  # (batch, dim)
 
 primary_enhanced, secondary_enhanced, attn_weights = fusion(
-    primary_text, 
+    primary_text,
     secondary_text
 )
 # Outputs: (32, 256), (32, 256), dict with attention weights
@@ -83,20 +83,15 @@ from ..feedforward import MLPBlock
 class BidirectionalCrossAttention(nn.Module):
     """
     Advanced bidirectional cross-attention with feed-forward processing.
-    
+
     Allows two modalities to exchange information through bidirectional attention
     with additional feed-forward processing for enhanced representation learning.
     """
-    
-    def __init__(
-        self, 
-        d_model: int = 100, 
-        num_heads: int = 8, 
-        dropout: float = 0.1
-    ):
+
+    def __init__(self, d_model: int = 100, num_heads: int = 8, dropout: float = 0.1):
         """
         Initialize BidirectionalCrossAttention.
-        
+
         Args:
             d_model: Dimension of input features (default: 100)
             num_heads: Number of attention heads (default: 8)
@@ -109,18 +104,12 @@ class BidirectionalCrossAttention(nn.Module):
 
         # Cross-attention layers: primary attends to secondary
         self.attn_p2s = nn.MultiheadAttention(
-            embed_dim=d_model, 
-            num_heads=num_heads, 
-            dropout=dropout, 
-            batch_first=True
+            embed_dim=d_model, num_heads=num_heads, dropout=dropout, batch_first=True
         )
 
         # Cross-attention layers: secondary attends to primary
         self.attn_s2p = nn.MultiheadAttention(
-            embed_dim=d_model, 
-            num_heads=num_heads, 
-            dropout=dropout, 
-            batch_first=True
+            embed_dim=d_model, num_heads=num_heads, dropout=dropout, batch_first=True
         )
 
         # Layer normalization for attention residuals
@@ -133,14 +122,14 @@ class BidirectionalCrossAttention(nn.Module):
             input_dim=d_model,
             hidden_dim=d_model * 4,
             dropout=dropout,
-            activation="relu"
+            activation="relu",
         )
 
         self.ffn_secondary = MLPBlock(
             input_dim=d_model,
             hidden_dim=d_model * 4,
             dropout=dropout,
-            activation="relu"
+            activation="relu",
         )
 
         # Layer normalization for FFN residuals
@@ -148,31 +137,29 @@ class BidirectionalCrossAttention(nn.Module):
         self.norm_ffn_secondary = nn.LayerNorm(d_model)
 
     def forward(
-        self, 
-        primary: torch.Tensor, 
-        secondary: torch.Tensor
+        self, primary: torch.Tensor, secondary: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         """
         Apply bidirectional cross-attention with feed-forward processing.
-        
+
         Args:
             primary: (B, d_model) - Primary modality features
             secondary: (B, d_model) - Secondary modality features
-            
+
         Returns:
             primary_final: (B, d_model) - Enhanced primary features
             secondary_final: (B, d_model) - Enhanced secondary features
             attention_weights: Dict with attention weight tensors
         """
         # Add sequence dimension for attention (treating each sample as single token)
-        primary_seq = primary.unsqueeze(1)      # (B, 1, d_model)
+        primary_seq = primary.unsqueeze(1)  # (B, 1, d_model)
         secondary_seq = secondary.unsqueeze(1)  # (B, 1, d_model)
 
         # Primary attends to Secondary
         p_attended, p_attn_weights = self.attn_p2s(
-            query=primary_seq,      # What primary wants to know
-            key=secondary_seq,      # What secondary can provide
-            value=secondary_seq,    # The actual secondary information
+            query=primary_seq,  # What primary wants to know
+            key=secondary_seq,  # What secondary can provide
+            value=secondary_seq,  # The actual secondary information
         )
 
         # Residual connection and layer norm
@@ -180,9 +167,9 @@ class BidirectionalCrossAttention(nn.Module):
 
         # Secondary attends to Primary
         s_attended, s_attn_weights = self.attn_s2p(
-            query=secondary_seq,    # What secondary wants to know
-            key=primary_seq,        # What primary can provide
-            value=primary_seq,      # The actual primary information
+            query=secondary_seq,  # What secondary wants to know
+            key=primary_seq,  # What primary can provide
+            value=primary_seq,  # The actual primary information
         )
 
         # Residual connection and layer norm
@@ -198,12 +185,16 @@ class BidirectionalCrossAttention(nn.Module):
         # Store attention weights for analysis/visualization
         # Shape: (B, num_heads, 1, 1) -> squeeze to (B, num_heads)
         attention_weights = {
-            "primary_to_secondary": p_attn_weights.squeeze(1) if p_attn_weights.dim() > 2 else p_attn_weights,
-            "secondary_to_primary": s_attn_weights.squeeze(1) if s_attn_weights.dim() > 2 else s_attn_weights,
+            "primary_to_secondary": p_attn_weights.squeeze(1)
+            if p_attn_weights.dim() > 2
+            else p_attn_weights,
+            "secondary_to_primary": s_attn_weights.squeeze(1)
+            if s_attn_weights.dim() > 2
+            else s_attn_weights,
         }
 
         return primary_final, secondary_final, attention_weights
-    
+
     def __repr__(self) -> str:
         return (
             f"BidirectionalCrossAttention(d_model={self.d_model}, "

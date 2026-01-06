@@ -16,13 +16,13 @@ from .concatenation_fusion import ConcatenationFusion, validate_modality_feature
 from .cross_attention_fusion import CrossAttentionFusion
 from .bidirectional_cross_attention import BidirectionalCrossAttention
 from .gate_fusion import GateFusion
-from .mixture_of_experts import MixtureOfExperts
+from .expert_routing_fusion import ExpertRoutingFusion
 
 __all__ = [
     "ConcatenationFusion",
     "CrossAttentionFusion",
     "BidirectionalCrossAttention",
     "GateFusion",
-    "MixtureOfExperts",
+    "ExpertRoutingFusion",
     "validate_modality_features",
 ]

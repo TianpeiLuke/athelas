@@ -2,5 +2,6 @@
 
 from .attention_head import AttentionHead
 from .multihead_attention import MultiHeadAttention
+from .temporal_attention import TemporalMultiheadAttention
 
-__all__ = ["AttentionHead", "MultiHeadAttention"]
+__all__ = ["AttentionHead", "MultiHeadAttention", "TemporalMultiheadAttention"]

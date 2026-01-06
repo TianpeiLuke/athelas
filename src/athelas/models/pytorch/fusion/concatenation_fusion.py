@@ -22,7 +22,7 @@ mechanisms while being computationally efficient.
 **Forward Signature:**
 Input:
   - *features: Variable number of tensors (B, D_i) - One per modality
-  
+
 Output:
   - fused: (B, output_dim) - Concatenated and projected features
 
@@ -99,20 +99,17 @@ from typing import List, Tuple
 class ConcatenationFusion(nn.Module):
     """
     Simple concatenation-based multi-modal fusion.
-    
+
     Concatenates features from multiple modalities and projects to target
     dimension. Serves as a strong baseline for multi-modal fusion.
     """
-    
+
     def __init__(
-        self, 
-        input_dims: List[int], 
-        output_dim: int,
-        use_activation: bool = True
+        self, input_dims: List[int], output_dim: int, use_activation: bool = True
     ):
         """
         Initialize ConcatenationFusion.
-        
+
         Args:
             input_dims: List of input dimensions for each modality
             output_dim: Target output dimension
@@ -124,12 +121,11 @@ class ConcatenationFusion(nn.Module):
         self.num_modalities = len(input_dims)
         self.total_input_dim = sum(input_dims)
         self.use_activation = use_activation
-        
+
         # Fusion network: ReLU → Linear (or just Linear)
         if use_activation:
             self.fusion = nn.Sequential(
-                nn.ReLU(),
-                nn.Linear(self.total_input_dim, output_dim)
+                nn.ReLU(), nn.Linear(self.total_input_dim, output_dim)
             )
         else:
             self.fusion = nn.Linear(self.total_input_dim, output_dim)
@@ -137,23 +133,22 @@ class ConcatenationFusion(nn.Module):
     def forward(self, *features: torch.Tensor) -> torch.Tensor:
         """
         Concatenate and fuse multiple modality features.
-        
+
         Args:
             *features: Variable number of tensors (B, D_i) - one per modality
-            
+
         Returns:
             fused: (B, output_dim) - Fused features
-            
+
         Raises:
             ValueError: If number of features doesn't match num_modalities
             ValueError: If feature dimensions don't match input_dims
         """
         if len(features) != self.num_modalities:
             raise ValueError(
-                f"Expected {self.num_modalities} modality features, "
-                f"got {len(features)}"
+                f"Expected {self.num_modalities} modality features, got {len(features)}"
             )
-        
+
         # Validate dimensions
         for i, (feat, expected_dim) in enumerate(zip(features, self.input_dims)):
             if feat.shape[1] != expected_dim:
@@ -161,15 +156,15 @@ class ConcatenationFusion(nn.Module):
                     f"Modality {i} has dimension {feat.shape[1]}, "
                     f"expected {expected_dim}"
                 )
-        
+
         # Concatenate along feature dimension
         concatenated = torch.cat(features, dim=1)  # (B, sum(D_i))
-        
+
         # Project to output dimension
         fused = self.fusion(concatenated)  # (B, output_dim)
-        
+
         return fused
-    
+
     def __repr__(self) -> str:
         activation_str = "ReLU + " if self.use_activation else ""
         return (
@@ -182,24 +177,24 @@ class ConcatenationFusion(nn.Module):
 def validate_modality_features(
     features: Tuple[torch.Tensor, ...],
     expected_dims: List[int],
-    modality_names: List[str] = None
+    modality_names: List[str] = None,
 ) -> None:
     """
     Utility function to validate modality feature dimensions.
-    
+
     Checks that:
     1. Number of features matches expected number of modalities
     2. Each feature has correct dimension
     3. All features have same batch size
-    
+
     Args:
         features: Tuple of feature tensors
         expected_dims: Expected dimension for each modality
         modality_names: Optional names for better error messages
-        
+
     Raises:
         ValueError: If validation fails
-        
+
     Example:
         >>> text_feat = torch.randn(32, 768)
         >>> tab_feat = torch.randn(32, 128)
@@ -211,18 +206,16 @@ def validate_modality_features(
     """
     if modality_names is None:
         modality_names = [f"modality_{i}" for i in range(len(expected_dims))]
-    
+
     if len(features) != len(expected_dims):
         raise ValueError(
             f"Expected {len(expected_dims)} modalities, got {len(features)}"
         )
-    
+
     batch_sizes = [feat.shape[0] for feat in features]
     if len(set(batch_sizes)) > 1:
-        raise ValueError(
-            f"Inconsistent batch sizes across modalities: {batch_sizes}"
-        )
-    
+        raise ValueError(f"Inconsistent batch sizes across modalities: {batch_sizes}")
+
     for feat, exp_dim, name in zip(features, expected_dims, modality_names):
         if feat.dim() != 2:
             raise ValueError(

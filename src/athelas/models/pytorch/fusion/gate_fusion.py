@@ -23,7 +23,7 @@ for each sample, computing: `gate * text + (1 - gate) * tabular`.
 Input:
   - text_features: (B, text_dim) - Text modality features
   - tab_features: (B, tab_dim) - Tabular modality features
-  
+
 Output:
   - fused: (B, fusion_dim) - Gated fusion of both modalities
 
@@ -73,29 +73,29 @@ import torch.nn as nn
 class GateFusion(nn.Module):
     """
     Learnable gating mechanism for dynamic modality fusion.
-    
+
     Computes gate weights to combine two modalities:
     fused = gate * text + (1 - gate) * tabular
     """
-    
+
     def __init__(self, text_dim: int, tab_dim: int, fusion_dim: int):
         """
         Initialize GateFusion.
-        
+
         Args:
             text_dim: Dimension of text features
-            tab_dim: Dimension of tabular features  
+            tab_dim: Dimension of tabular features
             fusion_dim: Target fusion dimension
         """
         super().__init__()
         self.text_dim = text_dim
         self.tab_dim = tab_dim
         self.fusion_dim = fusion_dim
-        
+
         # Project each modality to common fusion dimension
         self.text_proj = nn.Linear(text_dim, fusion_dim)
         self.tab_proj = nn.Linear(tab_dim, fusion_dim)
-        
+
         # Gate network: learns to weight modalities
         self.gate_net = nn.Sequential(
             nn.Linear(fusion_dim * 2, fusion_dim),
@@ -104,35 +104,33 @@ class GateFusion(nn.Module):
         )
 
     def forward(
-        self, 
-        text_features: torch.Tensor, 
-        tab_features: torch.Tensor
+        self, text_features: torch.Tensor, tab_features: torch.Tensor
     ) -> torch.Tensor:
         """
         Apply learnable gating to fuse text and tabular modalities.
-        
+
         Args:
             text_features: (B, text_dim) - Text modality features
             tab_features: (B, tab_dim) - Tabular modality features
-            
+
         Returns:
             fused: (B, fusion_dim) - Gated fusion output
         """
         # Project to common dimension
         txt_feat = self.text_proj(text_features)  # (B, fusion_dim)
-        tab_feat = self.tab_proj(tab_features)    # (B, fusion_dim)
-        
+        tab_feat = self.tab_proj(tab_features)  # (B, fusion_dim)
+
         # Concatenate for gate computation
         combined = torch.cat([txt_feat, tab_feat], dim=1)  # (B, fusion_dim * 2)
-        
+
         # Compute gate weights (0 to 1)
         gate = self.gate_net(combined)  # (B, fusion_dim)
-        
+
         # Weighted combination: gate * text + (1 - gate) * tabular
         fused = gate * txt_feat + (1 - gate) * tab_feat
-        
+
         return fused
-    
+
     def __repr__(self) -> str:
         return (
             f"GateFusion(text_dim={self.text_dim}, "

@@ -4,7 +4,7 @@ Tabular Embedding
 General-purpose embedding layer for tabular/numerical features.
 
 **Core Concept:**
-Projects concatenated tabular features (numerical and/or categorical) into a 
+Projects concatenated tabular features (numerical and/or categorical) into a
 dense embedding space through LayerNorm → Linear → ReLU. Provides a standard
 interface for encoding tabular data in neural networks.
 
@@ -20,7 +20,7 @@ interface for encoding tabular data in neural networks.
 **Forward Signature:**
 Input:
   - x: (B, input_dim) - Concatenated tabular features
-  
+
 Output:
   - embeddings: (B, hidden_dim) - Embedded representations
 
@@ -75,15 +75,15 @@ from typing import Dict, List, Union
 class TabularEmbedding(nn.Module):
     """
     General-purpose tabular feature embedding.
-    
+
     Projects concatenated tabular features through LayerNorm → Linear → ReLU
     to create dense embeddings suitable for downstream neural network processing.
     """
-    
+
     def __init__(self, input_dim: int, hidden_dim: int):
         """
         Initialize TabularEmbedding.
-        
+
         Args:
             input_dim: Dimension of concatenated input features
             hidden_dim: Target embedding dimension
@@ -91,34 +91,31 @@ class TabularEmbedding(nn.Module):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
-        
+
         # Embedding: LayerNorm → Linear → ReLU
         self.embedding = nn.Sequential(
-            nn.LayerNorm(input_dim),
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU()
+            nn.LayerNorm(input_dim), nn.Linear(input_dim, hidden_dim), nn.ReLU()
         )
-        
+
         self.output_dim = hidden_dim
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Embed tabular features.
-        
+
         Args:
             x: (B, input_dim) - Concatenated tabular features
-            
+
         Returns:
             embeddings: (B, hidden_dim) - Embedded representations
         """
         if x.shape[1] != self.input_dim:
             raise ValueError(
-                f"Expected input with {self.input_dim} features, "
-                f"got {x.shape[1]}"
+                f"Expected input with {self.input_dim} features, got {x.shape[1]}"
             )
-        
+
         return self.embedding(x)
-    
+
     def __repr__(self) -> str:
         return (
             f"TabularEmbedding(input_dim={self.input_dim}, "
@@ -127,28 +124,28 @@ class TabularEmbedding(nn.Module):
 
 
 def combine_tabular_fields(
-    batch: Dict[str, Union[torch.Tensor, List]], 
+    batch: Dict[str, Union[torch.Tensor, List]],
     field_list: List[str],
-    device: torch.device
+    device: torch.device,
 ) -> torch.Tensor:
     """
     Utility function to combine multiple tabular fields into a single tensor.
-    
+
     Concatenates specified fields from a batch dictionary into a single tensor
     of shape (B, total_features), handling both list and tensor inputs.
-    
+
     Args:
         batch: Dictionary containing field_name -> values mapping
         field_list: List of field names to concatenate
         device: Target device for output tensor
-        
+
     Returns:
         combined: (B, total_features) - Concatenated tabular features
-        
+
     Raises:
         KeyError: If a field in field_list is not in batch
         TypeError: If a field has unsupported type
-        
+
     Example:
         >>> batch = {
         ...     'age': torch.tensor([25, 30, 35]),
@@ -156,7 +153,7 @@ def combine_tabular_fields(
         ...     'score': [0.8, 0.9, 0.7]
         ... }
         >>> combined = combine_tabular_fields(
-        ...     batch, 
+        ...     batch,
         ...     ['age', 'income', 'score'],
         ...     torch.device('cpu')
         ... )
@@ -164,15 +161,15 @@ def combine_tabular_fields(
         torch.Size([3, 3])
     """
     features = []
-    
+
     for field in field_list:
         if field not in batch:
             raise KeyError(
                 f"Missing field '{field}' in batch during tabular combination"
             )
-        
+
         val = batch[field]
-        
+
         # Convert to tensor if needed
         if isinstance(val, list):
             val = torch.tensor(val, dtype=torch.float32, device=device)
@@ -183,12 +180,12 @@ def combine_tabular_fields(
                 f"Unsupported type for field '{field}': {type(val)}. "
                 f"Expected list or torch.Tensor"
             )
-        
+
         # Ensure 2D shape (B, features)
         if val.dim() == 1:
             val = val.unsqueeze(1)
-        
+
         features.append(val)
-    
+
     # Concatenate along feature dimension
     return torch.cat(features, dim=1)

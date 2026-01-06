@@ -22,6 +22,11 @@ from .bert_encoder import (
     create_bert_optimizer_groups,
 )
 
+# TSA-specific composite blocks (Phase 2)
+from .attention_layer import AttentionLayer, AttentionLayerPreNorm
+from .order_attention import OrderAttentionModule
+from .feature_attention import FeatureAttentionModule
+
 __all__ = [
     "TransformerBlock",
     "LSTMEncoder",
@@ -31,4 +36,9 @@ __all__ = [
     "BertEncoder",
     "get_bert_config",
     "create_bert_optimizer_groups",
+    # TSA-specific composite blocks
+    "AttentionLayer",
+    "AttentionLayerPreNorm",
+    "OrderAttentionModule",
+    "FeatureAttentionModule",
 ]
