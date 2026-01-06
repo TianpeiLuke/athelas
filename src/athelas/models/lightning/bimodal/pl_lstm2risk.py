@@ -55,7 +55,7 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 
-from ...hyperparams.hyperparameters_lstm2risk import LSTM2RiskHyperparameters
+from ....hyperparams.hyperparameters_lstm2risk import LSTM2RiskHyperparameters
 from ...pytorch.blocks import LSTMEncoder
 from ...pytorch.feedforward import ResidualBlock
 

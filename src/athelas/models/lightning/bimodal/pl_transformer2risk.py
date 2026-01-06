@@ -57,7 +57,7 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 
-from ...hyperparams.hyperparameters_transformer2risk import (
+from ....hyperparams.hyperparameters_transformer2risk import (
     Transformer2RiskHyperparameters,
 )
 from ...pytorch.blocks import TransformerEncoder
