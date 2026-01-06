@@ -9,7 +9,7 @@ neural network architectures following Zettelkasten principles:
 
 Components organized by function:
 - attention: Attention mechanisms (multihead, cross-attention, etc.)
-- blocks: Composite blocks (transformer, LSTM encoder, etc.)
+- blocks: Composite encoder blocks (transformer, LSTM, CNN, etc.)
 - embeddings: Input embeddings (tabular, temporal, positional, etc.)
 - feedforward: Feed-forward networks (MLP, residual blocks, etc.)
 - fusion: Multi-modal fusion mechanisms (cross-attention, gating, MoE, etc.)
@@ -20,11 +20,20 @@ from .attention import AttentionHead, MultiHeadAttention
 from .pooling import AttentionPooling
 from .feedforward import MLPBlock, ResidualBlock
 from .embeddings import TabularEmbedding, combine_tabular_fields
+from .blocks import (
+    TransformerBlock,
+    TransformerEncoder,
+    LSTMEncoder,
+    CNNEncoder,
+    compute_cnn_output_length,
+)
 from .fusion import (
+    ConcatenationFusion,
     CrossAttentionFusion,
     BidirectionalCrossAttention,
     GateFusion,
     MixtureOfExperts,
+    validate_modality_features,
 )
 
 __all__ = [
@@ -39,9 +48,17 @@ __all__ = [
     # Embeddings
     "TabularEmbedding",
     "combine_tabular_fields",
+    # Composite blocks (encoders)
+    "TransformerBlock",
+    "TransformerEncoder",
+    "LSTMEncoder",
+    "CNNEncoder",
+    "compute_cnn_output_length",
     # Fusion mechanisms
+    "ConcatenationFusion",
     "CrossAttentionFusion",
     "BidirectionalCrossAttention",
     "GateFusion",
     "MixtureOfExperts",
+    "validate_modality_features",
 ]
