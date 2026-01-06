@@ -13,17 +13,23 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 import lightning.pytorch as pl
 
-from transformers import (
-    get_linear_schedule_with_warmup,
-    get_constant_schedule_with_warmup,
-)
 import onnx
 
 from ..utils.dist_utils import all_gather, get_rank
-from ..tabular.pl_tab_ae import TabAE
-from ..text.pl_bert import TextBertBase
 from ..utils.pl_model_plots import compute_metrics
 from ..utils.config_constants import filter_config_for_tensorboard
+
+# Import PyTorch components (relative imports)
+from ...pytorch.blocks import (
+    BertEncoder,
+    create_bert_optimizer_groups,
+)
+from ...pytorch.embeddings import TabularEmbedding, combine_tabular_fields
+from ...pytorch.fusion import CrossAttentionFusion
+from ...pytorch.schedulers import (
+    create_bert_scheduler,
+    get_scheduler_config_for_lightning,
+)
 
 # ============ Logging Setup ============
 logger = logging.getLogger(__name__)
@@ -33,29 +39,6 @@ handler.setLevel(logging.INFO)
 handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
 logger.addHandler(handler)
 logger.propagate = False
-
-
-class CrossAttentionFusion(nn.Module):
-    def __init__(self, hidden_dim: int, num_heads: int = 4):
-        super().__init__()
-        # text queries attend to tabular keys/values
-        self.text2tab = nn.MultiheadAttention(
-            embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
-        )
-        # tabular queries attend to text keys/values
-        self.tab2text = nn.MultiheadAttention(
-            embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
-        )
-        self.text_norm = nn.LayerNorm(hidden_dim)
-        self.tab_norm = nn.LayerNorm(hidden_dim)
-
-    def forward(self, text_seq: torch.Tensor, tab_seq: torch.Tensor):
-        # text_seq: [B, 1, H], tab_seq: [B, 1, H]
-        t2t, _ = self.text2tab(query=text_seq, key=tab_seq, value=tab_seq)
-        text_out = self.text_norm(text_seq + t2t)
-        tab2, _ = self.tab2text(query=tab_seq, key=text_out, value=text_out)
-        tab_out = self.tab_norm(tab_seq + tab2)
-        return text_out, tab_out
 
 
 class BimodalBertCrossAttn(pl.LightningModule):
@@ -103,28 +86,35 @@ class BimodalBertCrossAttn(pl.LightningModule):
         self.test_output_folder = None
         self.test_has_label = False
 
-        # — Sub-networks —
-        self.tab_subnetwork = TabAE(config) if self.tab_field_list else None
-        tab_dim = self.tab_subnetwork.output_tab_dim if self.tab_subnetwork else 0
-
-        self.text_subnetwork = TextBertBase(config)
-        text_dim = self.text_subnetwork.output_text_dim
-
-        # === Enable gradient checkpointing if configured ===
-        if config.get("use_gradient_checkpointing", False):
-            logger.info("Enabling gradient checkpointing for memory optimization")
-            self.text_subnetwork.bert.gradient_checkpointing_enable()
-
-        # — Cross-attention fusion —
+        # === BERT Text Encoder using BertEncoder ===
         hidden_dim = config["hidden_common_dim"]
-        num_heads = config.get("num_heads", 4)
-        # ensure both branches embed to same hidden_dim:
-        assert text_dim == hidden_dim and tab_dim == hidden_dim, (
-            f"text_dim ({text_dim}) and tab_dim ({tab_dim}) must both = hidden_common_dim ({hidden_dim})"
+        self.text_encoder = BertEncoder(
+            model_name=config.get("tokenizer", "bert-base-cased"),
+            output_dim=hidden_dim,
+            dropout=0.1,
+            reinit_pooler=config.get("reinit_pooler", False),
+            reinit_layers=config.get("reinit_layers", 0),
+            gradient_checkpointing=config.get("use_gradient_checkpointing", False),
         )
+        text_dim = self.text_encoder.output_dim
+        
+        # === Tabular Encoder using TabularEmbedding ===
+        if self.tab_field_list:
+            tab_input_dim = len(self.tab_field_list)
+            self.tab_encoder = TabularEmbedding(
+                input_dim=tab_input_dim,
+                hidden_dim=hidden_dim
+            )
+            tab_dim = self.tab_encoder.hidden_dim
+        else:
+            self.tab_encoder = None
+            tab_dim = 0
+
+        # === Cross-attention fusion using CrossAttentionFusion ===
+        num_heads = config.get("num_heads", 4)
         self.cross_att = CrossAttentionFusion(hidden_dim, num_heads)
 
-        # — Final classifier on concat([text,tab]) after fusion —
+        # === Final classifier on concat([text,tab]) after fusion ===
         self.final_merge_network = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.ReLU(),
@@ -148,80 +138,67 @@ class BimodalBertCrossAttn(pl.LightningModule):
         self.save_hyperparameters(filtered_config)
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        tab_data = (
-            self.tab_subnetwork.combine_tab_data(batch).float()
-            if self.tab_subnetwork
-            else None
-        )
-        return self._forward_impl(batch, tab_data)
-
-    def _forward_impl(self, batch, tab_data) -> torch.Tensor:
-        device = next(self.parameters()).device
-
-        # — Text branch — [B, hidden_dim]
-        text_out = self.text_subnetwork(batch)
-
-        # — Tabular branch — [B, hidden_dim]
-        if tab_data is not None:
-            tab_out = self.tab_subnetwork(tab_data.to(device))
+        """
+        Forward pass using PyTorch components.
+        """
+        # Extract text inputs
+        input_ids = batch[self.text_name]
+        attention_mask = batch[self.text_attention_mask]
+        
+        # Encode text with BertEncoder
+        text_out = self.text_encoder(input_ids, attention_mask)  # [B, hidden_dim]
+        
+        # Encode tabular if available
+        if self.tab_encoder:
+            tab_data = combine_tabular_fields(
+                batch, self.tab_field_list, self.device
+            )
+            tab_out = self.tab_encoder(tab_data)  # [B, hidden_dim]
         else:
-            tab_out = torch.zeros((text_out.size(0), 0), device=device)
-
-        # — unsqueeze to seq-length=1 —
+            tab_out = torch.zeros((text_out.size(0), 0), device=self.device)
+        
+        # Unsqueeze to seq-length=1 for attention
         text_seq = text_out.unsqueeze(1)  # [B, 1, H]
         tab_seq = tab_out.unsqueeze(1)  # [B, 1, H]
-
-        # — cross-attention fusion —
-        text_fused, tab_fused = self.cross_att(text_seq, tab_seq)
-        # => both [B,1,H]
-
-        # — squeeze back to [B,H] —
+        
+        # Cross-attention fusion using CrossAttentionFusion component
+        text_fused, tab_fused = self.cross_att(text_seq, tab_seq)  # Both [B, 1, H]
+        
+        # Squeeze back to [B, H]
         text_feat = text_fused.squeeze(1)  # [B, H]
         tab_feat = tab_fused.squeeze(1)  # [B, H]
-
-        # — concat & classify —
+        
+        # Concat & classify
         merged = torch.cat([text_feat, tab_feat], dim=1)  # [B, 2H]
         logits = self.final_merge_network(merged)  # [B, num_classes]
         return logits
 
     def configure_optimizers(self):
-        no_decay = ["bias", "LayerNorm.weight"]
-        params = [
-            {
-                "params": [
-                    p
-                    for n, p in self.named_parameters()
-                    if not any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": self.weight_decay,
-            },
-            {
-                "params": [
-                    p
-                    for n, p in self.named_parameters()
-                    if any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.0,
-            },
-        ]
-        optimizer = AdamW(params, lr=self.lr, eps=self.adam_epsilon)
+        """
+        Optimizer + LR scheduler using PyTorch utilities.
+        """
+        # Use create_bert_optimizer_groups utility
+        param_groups = create_bert_optimizer_groups(self, self.weight_decay)
+        optimizer = AdamW(param_groups, lr=self.lr, eps=self.adam_epsilon)
 
-        scheduler = (
-            get_linear_schedule_with_warmup(
-                optimizer, self.warmup_steps, self.trainer.estimated_stepping_batches
-            )
-            if self.run_scheduler
-            else get_constant_schedule_with_warmup(
-                optimizer, num_warmup_steps=self.warmup_steps
-            )
+        # Use create_bert_scheduler utility
+        schedule_type = "linear" if self.run_scheduler else "constant"
+        scheduler = create_bert_scheduler(
+            optimizer,
+            num_training_steps=self.trainer.estimated_stepping_batches,
+            num_warmup_steps=self.warmup_steps,
+            schedule_type=schedule_type
         )
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
-        }
+        
+        # Use get_scheduler_config_for_lightning utility
+        scheduler_config = get_scheduler_config_for_lightning(
+            scheduler, interval="step"
+        )
+        
+        return {"optimizer": optimizer, "lr_scheduler": scheduler_config}
 
     def run_epoch(self, batch, stage):
-        # labels = batch.get(self.label_name) if stage != "pred" else None
+        """Run forward pass and compute loss."""
         labels = batch.get(self.label_name_transformed) if stage != "pred" else None
 
         if labels is not None:
@@ -236,15 +213,10 @@ class BimodalBertCrossAttn(pl.LightningModule):
                 if labels.dim() > 1:  # Assuming one-hot is 2D
                     labels = labels.argmax(dim=1).long()  # Convert one-hot to indices
                 else:
-                    labels = (
-                        labels.long()
-                    )  # Multiclass: Expects LongTensor (class indices)
+                    labels = labels.long()  # Multiclass: Expects LongTensor (class indices)
 
-        tab_data = (
-            self.tab_subnetwork.combine_tab_data(batch) if self.tab_subnetwork else None
-        )
-
-        logits = self._forward_impl(batch, tab_data)
+        # Use refactored forward() method
+        logits = self(batch)
         loss = self.loss_op(logits, labels) if stage != "pred" else None
 
         preds = torch.softmax(logits, dim=1)

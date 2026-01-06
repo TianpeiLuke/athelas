@@ -13,11 +13,6 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 import lightning.pytorch as pl
 
-
-from transformers import (
-    get_linear_schedule_with_warmup,
-    get_constant_schedule_with_warmup,
-)
 import onnx
 
 from ..utils.dist_utils import all_gather, get_rank

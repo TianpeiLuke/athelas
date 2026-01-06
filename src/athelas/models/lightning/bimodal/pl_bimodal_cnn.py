@@ -11,11 +11,14 @@ import lightning.pytorch as pl
 import onnx
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
-from ..tabular.pl_tab_ae import TabAE
-from ..text.pl_text_cnn import TextCNN
 from ..utils.dist_utils import all_gather
 from ..utils.pl_model_plots import compute_metrics
 from ..utils.config_constants import filter_config_for_tensorboard
+
+# Import PyTorch components (relative imports)
+from ...pytorch.blocks import CNNEncoder
+from ...pytorch.embeddings import TabularEmbedding, combine_tabular_fields
+from ...pytorch.fusion import ConcatenationFusion
 
 
 class BimodalCNN(pl.LightningModule):
@@ -54,16 +57,41 @@ class BimodalCNN(pl.LightningModule):
         self.test_output_folder = None
         self.test_has_label = False
 
-        # === Subnetworks ===
-        self.text_subnetwork = TextCNN(config, vocab_size, word_embeddings)
-        self.tab_subnetwork = TabAE(config) if self.tab_field_list else None
-
-        text_dim = self.text_subnetwork.output_text_dim
-        tab_dim = self.tab_subnetwork.output_tab_dim if self.tab_subnetwork else 0
-
-        self.final_merge_network = nn.Sequential(
-            nn.ReLU(),
-            nn.Linear(tab_dim + text_dim, self.num_classes),
+        # === Text Encoder using CNNEncoder ===
+        self.text_encoder = CNNEncoder(
+            vocab_size=vocab_size,
+            embedding_dim=word_embeddings.shape[1],
+            kernel_sizes=config.get("kernel_size", [3, 5, 7]),
+            num_channels=config.get("num_channels", [100, 100]),
+            num_layers=config.get("num_layers", 2),
+            output_dim=config.get("hidden_common_dim", 100),
+            dropout=config.get("dropout_keep", 0.5),
+            max_seq_len=config.get("max_sen_len", 512)
+        )
+        # Set pretrained embeddings
+        self.text_encoder.embeddings.weight = nn.Parameter(
+            word_embeddings,
+            requires_grad=config.get("is_embeddings_trainable", True)
+        )
+        text_dim = self.text_encoder.output_dim
+        
+        # === Tabular Encoder using TabularEmbedding ===
+        if self.tab_field_list:
+            tab_input_dim = len(self.tab_field_list)
+            self.tab_encoder = TabularEmbedding(
+                input_dim=tab_input_dim,
+                hidden_dim=config.get("hidden_common_dim", 100)
+            )
+            tab_dim = self.tab_encoder.hidden_dim
+        else:
+            self.tab_encoder = None
+            tab_dim = 0
+        
+        # === Fusion using ConcatenationFusion ===
+        self.fusion = ConcatenationFusion(
+            input_dims=[text_dim, tab_dim] if tab_dim > 0 else [text_dim],
+            output_dim=self.num_classes,
+            use_activation=True  # ReLU before Linear
         )
 
         # === Loss Function ===
@@ -82,21 +110,26 @@ class BimodalCNN(pl.LightningModule):
         self.save_hyperparameters(filtered_config)
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        tab_data = (
-            self.tab_subnetwork.combine_tab_data(batch) if self.tab_subnetwork else None
-        )
-        return self._forward_impl(batch, tab_data)
-
-    def _forward_impl(self, batch, tab_data):
+        """
+        Forward pass using PyTorch components.
+        """
+        # Encode text with CNNEncoder
         input_ids = batch[self.text_name]
-        text_out = self.text_subnetwork(input_ids)
-        tab_out = (
-            self.tab_subnetwork(tab_data.float())
-            if tab_data is not None
-            else torch.zeros((text_out.size(0), 0), device=self.device)
-        )
-        combined = torch.cat([text_out, tab_out], dim=1)
-        return self.final_merge_network(combined)
+        text_features = self.text_encoder(input_ids)
+        
+        # Encode tabular if available
+        if self.tab_encoder:
+            tab_data = combine_tabular_fields(
+                batch, self.tab_field_list, self.device
+            )
+            tab_features = self.tab_encoder(tab_data)
+            # Fuse with ConcatenationFusion
+            logits = self.fusion(text_features, tab_features)
+        else:
+            # Text only
+            logits = self.fusion(text_features)
+        
+        return logits
 
     def run_epoch(self, batch, stage):
         labels = batch.get(self.label_name) if stage != "pred" else None
