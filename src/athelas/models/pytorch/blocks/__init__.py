@@ -9,12 +9,18 @@ Components:
 - TransformerEncoder: Stack of transformer blocks
 - LSTMEncoder: Bidirectional LSTM with attention pooling
 - CNNEncoder: Multi-kernel 1D CNN for sequences (TextCNN)
+- BertEncoder: Pretrained BERT-based encoder with utilities
 """
 
 from .transformer_block import TransformerBlock
 from .lstm_encoder import LSTMEncoder
 from .transformer_encoder import TransformerEncoder
 from .cnn_encoder import CNNEncoder, compute_cnn_output_length
+from .bert_encoder import (
+    BertEncoder,
+    get_bert_config,
+    create_bert_optimizer_groups,
+)
 
 __all__ = [
     "TransformerBlock",
@@ -22,4 +28,7 @@ __all__ = [
     "TransformerEncoder",
     "CNNEncoder",
     "compute_cnn_output_length",
+    "BertEncoder",
+    "get_bert_config",
+    "create_bert_optimizer_groups",
 ]

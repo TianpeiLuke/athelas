@@ -26,6 +26,15 @@ from .blocks import (
     LSTMEncoder,
     CNNEncoder,
     compute_cnn_output_length,
+    BertEncoder,
+    get_bert_config,
+    create_bert_optimizer_groups,
+)
+from .schedulers import (
+    create_bert_scheduler,
+    create_warmup_scheduler,
+    get_scheduler_config_for_lightning,
+    calculate_warmup_steps,
 )
 from .fusion import (
     ConcatenationFusion,
@@ -54,6 +63,14 @@ __all__ = [
     "LSTMEncoder",
     "CNNEncoder",
     "compute_cnn_output_length",
+    "BertEncoder",
+    "get_bert_config",
+    "create_bert_optimizer_groups",
+    # Schedulers
+    "create_bert_scheduler",
+    "create_warmup_scheduler",
+    "get_scheduler_config_for_lightning",
+    "calculate_warmup_steps",
     # Fusion mechanisms
     "ConcatenationFusion",
     "CrossAttentionFusion",

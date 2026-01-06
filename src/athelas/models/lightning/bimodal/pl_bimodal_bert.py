@@ -22,9 +22,23 @@ import onnx
 
 from ..utils.dist_utils import all_gather, get_rank
 from ..tabular.pl_tab_ae import TabAE
-from ..text.pl_bert import TextBertBase
 from ..utils.pl_model_plots import compute_metrics
 from ..utils.config_constants import filter_config_for_tensorboard
+
+# Import PyTorch components (relative imports)
+from ...pytorch.blocks import (
+    BertEncoder,
+    create_bert_optimizer_groups,
+)
+from ...pytorch.embeddings import (
+    TabularEmbedding,
+    combine_tabular_fields,
+)
+from ...pytorch.fusion import ConcatenationFusion
+from ...pytorch.schedulers import (
+    create_bert_scheduler,
+    get_scheduler_config_for_lightning,
+)
 
 # =================== Logging Setup =================================
 logger = logging.getLogger(__name__)
@@ -85,24 +99,37 @@ class BimodalBert(pl.LightningModule):
         self.test_output_folder = None
         self.test_has_label = False
 
-        # === Sub-networks ===
-        self.tab_subnetwork = (
-            TabAE(config) if self.tab_field_list else None
-        )  # Or TabularEmbeddingModule
-        tab_dim = self.tab_subnetwork.output_tab_dim if self.tab_subnetwork else 0
-
-        self.text_subnetwork = TextBertBase(config)
-        text_dim = self.text_subnetwork.output_text_dim
-
-        # === Enable gradient checkpointing if configured ===
-        if config.get("use_gradient_checkpointing", False):
-            logger.info("Enabling gradient checkpointing for memory optimization")
-            self.text_subnetwork.bert.gradient_checkpointing_enable()
-
-        # === Final classifier ===
-        self.final_merge_network = nn.Sequential(
-            nn.ReLU(),
-            nn.Linear(tab_dim + text_dim, self.num_classes),
+        # === Sub-networks using PyTorch components ===
+        
+        # BERT Text Encoder
+        self.text_encoder = BertEncoder(
+            model_name=config.get("tokenizer", "bert-base-cased"),
+            output_dim=config.get("hidden_common_dim", 256),
+            dropout=0.1,
+            reinit_pooler=config.get("reinit_pooler", False),
+            reinit_layers=config.get("reinit_layers", 0),
+            gradient_checkpointing=config.get("use_gradient_checkpointing", False),
+        )
+        text_dim = self.text_encoder.output_dim
+        
+        # Tabular Encoder
+        if self.tab_field_list:
+            # Calculate input dimension from tab fields
+            tab_input_dim = len(self.tab_field_list)  # Simplified - adjust if needed
+            self.tab_encoder = TabularEmbedding(
+                input_dim=tab_input_dim,
+                hidden_dim=config.get("hidden_common_dim", 256)
+            )
+            tab_dim = self.tab_encoder.hidden_dim
+        else:
+            self.tab_encoder = None
+            tab_dim = 0
+        
+        # === Fusion using ConcatenationFusion ===
+        self.fusion = ConcatenationFusion(
+            input_dims=[text_dim, tab_dim] if tab_dim > 0 else [text_dim],
+            output_dim=self.num_classes,
+            use_activation=True  # ReLU before Linear
         )
 
         # === Loss function ===
@@ -125,69 +152,56 @@ class BimodalBert(pl.LightningModule):
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
-        Forward pass with batch input.
+        Forward pass using PyTorch components.
         Expects pre-tokenized inputs and tabular data as a dictionary.
         """
-        tab_data = (
-            self.tab_subnetwork.combine_tab_data(batch) if self.tab_subnetwork else None
-        )
-        return self._forward_impl(batch, tab_data)
-
-    def _forward_impl(self, batch, tab_data) -> torch.Tensor:
-        device = next(self.parameters()).device
-        # Use configurable key names to access text data]
-        text_out = self.text_subnetwork(batch)
-
-        if tab_data is not None:
-            tab_data = tab_data.float()  # Ensure tab_data is on the correct device
-            tab_out = self.tab_subnetwork(tab_data)  # [B, D]
+        # Extract text inputs
+        input_ids = batch[self.text_name]
+        attention_mask = batch[self.text_attention_mask]
+        
+        # Encode text with BertEncoder
+        text_features = self.text_encoder(input_ids, attention_mask)
+        
+        # Encode tabular if available
+        if self.tab_encoder:
+            tab_data = combine_tabular_fields(
+                batch, self.tab_field_list, self.device
+            )
+            tab_features = self.tab_encoder(tab_data)
+            # Fuse with ConcatenationFusion
+            logits = self.fusion(text_features, tab_features)
         else:
-            tab_out = torch.zeros((text_out.size(0), 0), device=device)
-
-        combined = torch.cat([text_out, tab_out], dim=1)
-        return self.final_merge_network(combined)
+            # Text only
+            logits = self.fusion(text_features)
+        
+        return logits
 
     def configure_optimizers(self):
         """
-        Optimizer + LR scheduler (AdamW + linear warmup)
+        Optimizer + LR scheduler using PyTorch utilities.
         """
-        no_decay = ["bias", "LayerNorm.weight"]
-        params = [
-            {
-                "params": [
-                    p
-                    for n, p in self.named_parameters()
-                    if not any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": self.weight_decay,
-            },
-            {
-                "params": [
-                    p
-                    for n, p in self.named_parameters()
-                    if any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.0,
-            },
-        ]
-        optimizer = AdamW(params, lr=self.lr, eps=self.adam_epsilon)
+        # Use create_bert_optimizer_groups utility
+        param_groups = create_bert_optimizer_groups(self, self.weight_decay)
+        optimizer = AdamW(param_groups, lr=self.lr, eps=self.adam_epsilon)
 
-        scheduler = (
-            get_linear_schedule_with_warmup(
-                optimizer, self.warmup_steps, self.trainer.estimated_stepping_batches
-            )
-            if self.run_scheduler
-            else get_constant_schedule_with_warmup(
-                optimizer, num_warmup_steps=self.warmup_steps
-            )
+        # Use create_bert_scheduler utility
+        schedule_type = "linear" if self.run_scheduler else "constant"
+        scheduler = create_bert_scheduler(
+            optimizer,
+            num_training_steps=self.trainer.estimated_stepping_batches,
+            num_warmup_steps=self.warmup_steps,
+            schedule_type=schedule_type
         )
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
-        }
+        
+        # Use get_scheduler_config_for_lightning utility
+        scheduler_config = get_scheduler_config_for_lightning(
+            scheduler, interval="step"
+        )
+        
+        return {"optimizer": optimizer, "lr_scheduler": scheduler_config}
 
     def run_epoch(self, batch, stage):
-        # labels = batch.get(self.label_name) if stage != "pred" else None
+        """Run forward pass and compute loss."""
         labels = batch.get(self.label_name_transformed) if stage != "pred" else None
 
         if labels is not None:
@@ -202,15 +216,10 @@ class BimodalBert(pl.LightningModule):
                 if labels.dim() > 1:  # Assuming one-hot is 2D
                     labels = labels.argmax(dim=1).long()  # Convert one-hot to indices
                 else:
-                    labels = (
-                        labels.long()
-                    )  # Multiclass: Expects LongTensor (class indices)
+                    labels = labels.long()  # Multiclass: Expects LongTensor (class indices)
 
-        tab_data = (
-            self.tab_subnetwork.combine_tab_data(batch) if self.tab_subnetwork else None
-        )
-
-        logits = self._forward_impl(batch, tab_data)
+        # Use refactored forward() method
+        logits = self(batch)
         loss = self.loss_op(logits, labels) if stage != "pred" else None
 
         preds = torch.softmax(logits, dim=1)
@@ -417,39 +426,3 @@ class BimodalBert(pl.LightningModule):
             logger.info(f"ONNX model exported and verified at {save_path}")
         except Exception as e:
             logger.warning(f"ONNX export failed: {e}")
-
-    def export_to_torchscript(
-        self,
-        save_path: Union[str, Path],
-        sample_batch: Dict[str, Union[torch.Tensor, List]],
-    ):
-        self.eval()
-
-        # Clean the sample batch: remove list of strings, convert list of numbers to tensors
-        sample_batch_tensorized = {}
-        for k, v in sample_batch.items():
-            if isinstance(v, list):
-                if all(isinstance(x, str) for x in v):
-                    continue  # Skip string list (e.g., dialogue)
-                sample_batch_tensorized[k] = torch.tensor(v).to("cpu")
-            elif isinstance(v, torch.Tensor):
-                sample_batch_tensorized[k] = v.to("cpu")
-
-        # Unwrap from FSDP if needed
-        model_to_export = self
-        if isinstance(self, FSDP):
-            model_to_export = self.module  # Unwrap the actual LightningModule
-
-        model_to_export = model_to_export.to("cpu")
-        model_to_export.eval()
-
-        # Trace the forward method using the cleaned sample batch
-        try:
-            scripted_model = torch.jit.trace(
-                model_to_export, (sample_batch_tensorized,)
-            )
-        except Exception as e:
-            logger.warning(f"Trace failed: {e}. Trying script...")
-            scripted_model = torch.jit.script(model_to_export)
-        scripted_model.save(str(save_path))
-        logger.info(f"TorchScript model saved to: {save_path}")
