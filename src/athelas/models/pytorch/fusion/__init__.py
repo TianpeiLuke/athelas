@@ -9,6 +9,7 @@ Components:
 - CrossAttentionFusion: Simple bidirectional cross-attention
 - BidirectionalCrossAttention: Advanced cross-attention with FFN
 - GateFusion: Learnable gating mechanism
+- WeightedEnsembleFusion: Weighted fusion with pre-computed scores
 - MixtureOfExperts: Routing-based expert fusion
 """
 
@@ -16,6 +17,7 @@ from .concatenation_fusion import ConcatenationFusion, validate_modality_feature
 from .cross_attention_fusion import CrossAttentionFusion
 from .bidirectional_cross_attention import BidirectionalCrossAttention
 from .gate_fusion import GateFusion
+from .weighted_ensemble_fusion import WeightedEnsembleFusion
 from .expert_routing_fusion import ExpertRoutingFusion
 
 __all__ = [
@@ -23,6 +25,7 @@ __all__ = [
     "CrossAttentionFusion",
     "BidirectionalCrossAttention",
     "GateFusion",
+    "WeightedEnsembleFusion",
     "ExpertRoutingFusion",
     "validate_modality_features",
 ]

@@ -14,12 +14,24 @@ Components organized by function:
 - feedforward: Feed-forward networks (MLP, residual blocks, etc.)
 - fusion: Multi-modal fusion mechanisms (cross-attention, gating, MoE, etc.)
 - pooling: Pooling operations (attention pooling, sequence pooling, etc.)
+- losses: Loss functions for classification (focal loss, asymmetric loss, etc.)
 """
 
 from .attention import AttentionHead, MultiHeadAttention, TemporalMultiheadAttention
 from .pooling import AttentionPooling, FeatureAggregation, compute_fm_parallel
-from .feedforward import MLPBlock, ResidualBlock, MixtureOfExperts
+from .feedforward import MLPBlock, MLPProjection, ResidualBlock, MixtureOfExperts
 from .embeddings import TimeEncode, TabularEmbedding, combine_tabular_fields
+from .losses import (
+    FocalLoss,
+    CyclicalFocalLoss,
+    CosineFocalLoss,
+    AsymmetricLoss,
+    AsymmetricLossOptimized,
+    ASLSingleLabel,
+    LabelSmoothingCrossEntropyLoss,
+    WeightedCrossEntropyLoss,
+    get_loss_function,
+)
 from .blocks import (
     TransformerBlock,
     TransformerEncoder,
@@ -61,12 +73,23 @@ __all__ = [
     "compute_fm_parallel",
     # Feedforward networks
     "MLPBlock",
+    "MLPProjection",
     "ResidualBlock",
     "MixtureOfExperts",
     # Embeddings
     "TimeEncode",
     "TabularEmbedding",
     "combine_tabular_fields",
+    # Loss functions
+    "FocalLoss",
+    "CyclicalFocalLoss",
+    "CosineFocalLoss",
+    "AsymmetricLoss",
+    "AsymmetricLossOptimized",
+    "ASLSingleLabel",
+    "LabelSmoothingCrossEntropyLoss",
+    "WeightedCrossEntropyLoss",
+    "get_loss_function",
     # Composite blocks (encoders)
     "TransformerBlock",
     "TransformerEncoder",

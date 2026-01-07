@@ -40,7 +40,7 @@ Input:
   - x_cat: [B, L, n_cat] - Categorical features
   - x_num: [B, L, n_num] - Numerical features
   - time_seq: [B, L, 1] - Time sequence
-  
+
 Output:
   - output: [B, 2*dim_embedding_table] - Order-aware representation
 
@@ -90,11 +90,11 @@ from .attention_layer import AttentionLayer
 class OrderAttentionModule(nn.Module):
     """
     Order attention module for temporal transaction sequence processing.
-    
+
     Stacks multiple attention layers with temporal encoding for
     order-aware feature learning.
     """
-    
+
     def __init__(
         self,
         n_cat_features: int,
@@ -112,7 +112,7 @@ class OrderAttentionModule(nn.Module):
     ):
         """
         Initialize OrderAttentionModule.
-        
+
         Args:
             n_cat_features: Number of categorical features
             n_num_features: Number of numerical features
@@ -128,47 +128,49 @@ class OrderAttentionModule(nn.Module):
             second_policy_eval: MoE evaluation policy
         """
         super().__init__()
-        
+
         self.n_cat_features = n_cat_features
         self.n_num_features = n_num_features
         self.dim_embedding_table = dim_embedding_table
         self.n_layers_order = n_layers_order
-        
+
         # Embedding for categorical features
         self.cat_embedding = nn.Embedding(n_embedding, dim_embedding_table)
-        
+
         # Linear projection for numerical features
         self.num_linear = nn.Linear(n_num_features, dim_embedding_table)
-        
+
         # Feature aggregation (Phase 1 atomic)
         total_features = n_cat_features + 1  # +1 for numerical features
         self.feature_aggregation = FeatureAggregation(total_features)
-        
+
         # Temporal encoding (Phase 1 atomic)
         self.time_encoder = TimeEncode(dim_embedding_table)
-        
+
         # Stack of attention layers (Phase 2 composite)
-        self.attention_layers = nn.ModuleList([
-            AttentionLayer(
-                dim=dim_embedding_table,
-                time_dim=dim_embedding_table,
-                num_heads=num_heads,
-                dim_feedforward=dim_attn_feedforward,
-                use_moe=use_moe,
-                num_experts=num_experts,
-                dropout=dropout,
-                second_policy_train=second_policy_train,
-                second_policy_eval=second_policy_eval,
-            )
-            for _ in range(n_layers_order)
-        ])
-        
+        self.attention_layers = nn.ModuleList(
+            [
+                AttentionLayer(
+                    dim=dim_embedding_table,
+                    time_dim=dim_embedding_table,
+                    num_heads=num_heads,
+                    dim_feedforward=dim_attn_feedforward,
+                    use_moe=use_moe,
+                    num_experts=num_experts,
+                    dropout=dropout,
+                    second_policy_train=second_policy_train,
+                    second_policy_eval=second_policy_eval,
+                )
+                for _ in range(n_layers_order)
+            ]
+        )
+
         # Final linear layers for output
         self.output_linear1 = nn.Linear(dim_embedding_table, dim_embedding_table)
         self.output_linear2 = nn.Linear(dim_embedding_table, dim_embedding_table)
-        
+
         self.dropout = nn.Dropout(dropout)
-    
+
     def forward(
         self,
         x_cat: torch.Tensor,
@@ -177,52 +179,52 @@ class OrderAttentionModule(nn.Module):
     ) -> torch.Tensor:
         """
         Forward pass for order attention.
-        
+
         Args:
             x_cat: Categorical features [B, L, n_cat]
             x_num: Numerical features [B, L, n_num]
             time_seq: Time sequence [B, L, 1]
-            
+
         Returns:
             output: [B, 2*dim_embedding_table] - Order-aware representation
         """
         batch_size, seq_len, _ = x_cat.shape
-        
+
         # Embed categorical features
         cat_emb = self.cat_embedding(x_cat)  # [B, L, n_cat, dim]
-        
+
         # Project numerical features
         num_emb = self.num_linear(x_num)  # [B, L, dim]
         num_emb = num_emb.unsqueeze(2)  # [B, L, 1, dim]
-        
+
         # Concatenate categorical and numerical embeddings
         all_features = torch.cat([cat_emb, num_emb], dim=2)  # [B, L, n_cat+1, dim]
-        
+
         # Aggregate features (Phase 1 atomic)
         # Permute for aggregation: [B, L, dim, n_features]
         all_features = all_features.permute(0, 1, 3, 2)
         aggregated = self.feature_aggregation(all_features)  # [B, L, dim, 1]
         aggregated = aggregated.squeeze(-1)  # [B, L, dim]
-        
+
         # Permute to [L, B, dim] for attention layers
         x = aggregated.permute(1, 0, 2)  # [L, B, dim]
-        
+
         # Apply stacked attention layers (Phase 2 composite)
         for attn_layer in self.attention_layers:
             x = attn_layer(x, time_seq)  # [L, B, dim]
-        
+
         # Permute back to [B, L, dim]
         x = x.permute(1, 0, 2)  # [B, L, dim]
-        
+
         # Take first and last timesteps
         first_step = x[:, 0, :]  # [B, dim]
         last_step = x[:, -1, :]  # [B, dim]
-        
+
         # Apply output projections
         first_out = self.output_linear1(first_step)  # [B, dim]
         last_out = self.output_linear2(last_step)  # [B, dim]
-        
+
         # Concatenate first and last representations
         output = torch.cat([first_out, last_out], dim=-1)  # [B, 2*dim]
-        
+
         return output

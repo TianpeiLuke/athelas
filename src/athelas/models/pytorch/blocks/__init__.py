@@ -26,6 +26,7 @@ from .bert_encoder import (
 from .attention_layer import AttentionLayer, AttentionLayerPreNorm
 from .order_attention import OrderAttentionModule
 from .feature_attention import FeatureAttentionModule
+from .sequence_gate import DualSequenceGate
 
 __all__ = [
     "TransformerBlock",
@@ -41,4 +42,5 @@ __all__ = [
     "AttentionLayerPreNorm",
     "OrderAttentionModule",
     "FeatureAttentionModule",
+    "DualSequenceGate",
 ]

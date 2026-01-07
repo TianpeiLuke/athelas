@@ -4,8 +4,8 @@ Attention Layer Blocks
 Multi-head attention layers with temporal encoding and MoE feedforward.
 
 **Core Concept:**
-Composite attention blocks that combine temporal multi-head attention with 
-feedforward processing (MoE). Provides both post-normalization (AttentionLayer) 
+Composite attention blocks that combine temporal multi-head attention with
+feedforward processing (MoE). Provides both post-normalization (AttentionLayer)
 and pre-normalization (AttentionLayerPreNorm) variants for TSA models.
 
 **Architecture:**
@@ -36,7 +36,7 @@ Input:
   - time_seq: [L, B, 1] - Temporal information
   - attn_mask: Optional attention mask
   - key_padding_mask: Optional padding mask
-  
+
 Output:
   - output: [L, B, E] - Processed sequence
 
@@ -50,7 +50,7 @@ from temporal_self_attention_pytorch.pytorch.blocks import AttentionLayer, Atten
 
 # Post-norm variant
 attn_layer = AttentionLayer(
-    dim=128, time_dim=128, num_heads=4, 
+    dim=128, time_dim=128, num_heads=4,
     dim_feedforward=512, use_moe=True, num_experts=5
 )
 
@@ -84,10 +84,10 @@ from ..feedforward import MixtureOfExperts
 class AttentionLayer(nn.Module):
     """
     Post-normalization attention layer with temporal encoding and MoE.
-    
+
     Architecture: Attention → Add → Norm → FFN → Add → Norm
     """
-    
+
     def __init__(
         self,
         dim: int,
@@ -102,7 +102,7 @@ class AttentionLayer(nn.Module):
     ):
         """
         Initialize AttentionLayer (post-norm).
-        
+
         Args:
             dim: Model dimension
             time_dim: Temporal encoding dimension
@@ -115,20 +115,18 @@ class AttentionLayer(nn.Module):
             second_policy_eval: MoE evaluation policy
         """
         super().__init__()
-        
+
         self.dim = dim
         self.use_moe = use_moe
-        
+
         # Temporal encoding (Phase 1 atomic)
         self.time_encoder = TimeEncode(time_dim)
-        
+
         # Temporal multi-head attention (Phase 1 atomic)
         self.self_attn = TemporalMultiheadAttention(
-            embed_dim=dim,
-            num_heads=num_heads,
-            dropout=dropout
+            embed_dim=dim, num_heads=num_heads, dropout=dropout
         )
-        
+
         # Feedforward network (Phase 1 atomic - MoE or standard)
         if use_moe:
             self.feedforward = MixtureOfExperts(
@@ -144,16 +142,16 @@ class AttentionLayer(nn.Module):
                 nn.ReLU(),
                 nn.Dropout(dropout),
                 nn.Linear(dim_feedforward, dim),
-                nn.Dropout(dropout)
+                nn.Dropout(dropout),
             )
-        
+
         # Layer normalization
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
-        
+
         # Dropout
         self.dropout = nn.Dropout(dropout)
-    
+
     def forward(
         self,
         x: torch.Tensor,
@@ -163,42 +161,40 @@ class AttentionLayer(nn.Module):
     ) -> torch.Tensor:
         """
         Forward pass with post-normalization.
-        
+
         Args:
             x: Input tensor [L, B, E]
             time_seq: Time sequence [L, B, 1] or [B, L, 1]
             attn_mask: Attention mask (optional)
             key_padding_mask: Key padding mask (optional)
-            
+
         Returns:
             output: [L, B, E] - Processed sequence
         """
         # Self-attention with temporal encoding
         attn_output, _ = self.self_attn(
-            x, x, x, time_seq,
-            attn_mask=attn_mask,
-            key_padding_mask=key_padding_mask
+            x, x, x, time_seq, attn_mask=attn_mask, key_padding_mask=key_padding_mask
         )
-        
+
         # Add & Norm (post-norm pattern)
         x = self.norm1(x + self.dropout(attn_output))
-        
+
         # Feedforward
         ffn_output = self.feedforward(x)
-        
+
         # Add & Norm (post-norm pattern)
         x = self.norm2(x + self.dropout(ffn_output))
-        
+
         return x
 
 
 class AttentionLayerPreNorm(nn.Module):
     """
     Pre-normalization attention layer with temporal encoding and MoE.
-    
+
     Architecture: Norm → Attention → Add → Norm → FFN → Add
     """
-    
+
     def __init__(
         self,
         dim: int,
@@ -213,7 +209,7 @@ class AttentionLayerPreNorm(nn.Module):
     ):
         """
         Initialize AttentionLayerPreNorm (pre-norm).
-        
+
         Args:
             dim: Model dimension
             time_dim: Temporal encoding dimension
@@ -226,20 +222,18 @@ class AttentionLayerPreNorm(nn.Module):
             second_policy_eval: MoE evaluation policy
         """
         super().__init__()
-        
+
         self.dim = dim
         self.use_moe = use_moe
-        
+
         # Temporal encoding (Phase 1 atomic)
         self.time_encoder = TimeEncode(time_dim)
-        
+
         # Temporal multi-head attention (Phase 1 atomic)
         self.self_attn = TemporalMultiheadAttention(
-            embed_dim=dim,
-            num_heads=num_heads,
-            dropout=dropout
+            embed_dim=dim, num_heads=num_heads, dropout=dropout
         )
-        
+
         # Feedforward network (Phase 1 atomic - MoE or standard)
         if use_moe:
             self.feedforward = MixtureOfExperts(
@@ -255,16 +249,16 @@ class AttentionLayerPreNorm(nn.Module):
                 nn.ReLU(),
                 nn.Dropout(dropout),
                 nn.Linear(dim_feedforward, dim),
-                nn.Dropout(dropout)
+                nn.Dropout(dropout),
             )
-        
+
         # Layer normalization
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
-        
+
         # Dropout
         self.dropout = nn.Dropout(dropout)
-    
+
     def forward(
         self,
         x: torch.Tensor,
@@ -274,32 +268,35 @@ class AttentionLayerPreNorm(nn.Module):
     ) -> torch.Tensor:
         """
         Forward pass with pre-normalization.
-        
+
         Args:
             x: Input tensor [L, B, E]
             time_seq: Time sequence [L, B, 1] or [B, L, 1]
             attn_mask: Attention mask (optional)
             key_padding_mask: Key padding mask (optional)
-            
+
         Returns:
             output: [L, B, E] - Processed sequence
         """
         # Norm → Self-attention (pre-norm pattern)
         normed = self.norm1(x)
         attn_output, _ = self.self_attn(
-            normed, normed, normed, time_seq,
+            normed,
+            normed,
+            normed,
+            time_seq,
             attn_mask=attn_mask,
-            key_padding_mask=key_padding_mask
+            key_padding_mask=key_padding_mask,
         )
-        
+
         # Add
         x = x + self.dropout(attn_output)
-        
+
         # Norm → Feedforward (pre-norm pattern)
         normed = self.norm2(x)
         ffn_output = self.feedforward(normed)
-        
+
         # Add
         x = x + self.dropout(ffn_output)
-        
+
         return x
