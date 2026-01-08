@@ -19,7 +19,7 @@ Supports:
 
 Usage:
 ```python
-from names3risk_pytorch.dockers.lightning_models.bimodal import LSTM2RiskLightning
+from names3risk_pytorch.dockers.lightning_models.bimodal import LSTM2Risk
 from names3risk_pytorch.dockers.hyperparams import LSTM2RiskHyperparameters
 
 hyperparams = LSTM2RiskHyperparameters(
@@ -31,7 +31,7 @@ hyperparams = LSTM2RiskHyperparameters(
     ...
 )
 
-model = LSTM2RiskLightning(hyperparams)
+model = LSTM2Risk(hyperparams)
 trainer = pl.Trainer(max_epochs=10)
 trainer.fit(model, train_dataloader, val_dataloader)
 ```
@@ -55,7 +55,7 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 
-from ....hyperparams.hyperparameters_lstm2risk import LSTM2RiskHyperparameters
+from ...hyperparams.hyperparameters_lstm2risk import LSTM2RiskHyperparameters
 from ...pytorch.blocks import LSTMEncoder
 from ...pytorch.feedforward import ResidualBlock
 
@@ -87,7 +87,7 @@ logger.addHandler(handler)
 logger.propagate = False
 
 
-class LSTM2RiskLightning(pl.LightningModule):
+class LSTM2Risk(pl.LightningModule):
     """
     PyTorch Lightning module for LSTM2Risk bimodal fraud detection.
 
@@ -139,27 +139,25 @@ class LSTM2RiskLightning(pl.LightningModule):
         - Returns probabilities (not logits)
     """
 
-    def __init__(self, hyperparams: LSTM2RiskHyperparameters):
+    def __init__(self, config: Dict):
         super().__init__()
-        self.hyperparams = hyperparams
+        self.config = config
         self.model_class = "lstm2risk"
 
         # === Task configuration ===
-        self.label_name = getattr(hyperparams, "label_name", "label")
-        self.is_binary = hyperparams.is_binary
+        self.label_name = config.get("label_name", "label")
+        self.is_binary = config.get("is_binary", True)
         self.task = "binary" if self.is_binary else "multiclass"
-        self.num_classes = hyperparams.num_classes
-        self.metric_choices = getattr(
-            hyperparams, "metric_choices", ["accuracy", "f1_score"]
-        )
+        self.num_classes = 2 if self.is_binary else config.get("num_classes", 2)
+        self.metric_choices = config.get("metric_choices", ["accuracy", "f1_score"])
 
         # === Training configuration ===
-        self.model_path = getattr(hyperparams, "model_path", "")
-        self.lr = hyperparams.lr
-        self.weight_decay = getattr(hyperparams, "weight_decay", 0.0)
-        self.adam_epsilon = getattr(hyperparams, "adam_epsilon", 1e-8)
-        self.warmup_steps = getattr(hyperparams, "warmup_steps", 0)
-        self.run_scheduler = getattr(hyperparams, "run_scheduler", True)
+        self.model_path = config.get("model_path", "")
+        self.lr = config.get("lr", 2e-5)
+        self.weight_decay = config.get("weight_decay", 0.0)
+        self.adam_epsilon = config.get("adam_epsilon", 1e-8)
+        self.warmup_steps = config.get("warmup_steps", 0)
+        self.run_scheduler = config.get("run_scheduler", True)
 
         # === Storage for predictions ===
         self.id_lst, self.pred_lst, self.label_lst = [], [], []
@@ -169,29 +167,36 @@ class LSTM2RiskLightning(pl.LightningModule):
         # ============================================================
         # 1. Text Encoder: LSTMEncoder (bidirectional LSTM + attention pooling)
         # ============================================================
+        n_embed = config.get("n_embed", 4000)
+        embedding_size = config.get("embedding_size", 16)
+        hidden_size = config.get("hidden_size", 128)
+        n_lstm_layers = config.get("n_lstm_layers", 4)
+        dropout_rate = config.get("dropout_rate", 0.2)
+        input_tab_dim = config.get("input_tab_dim", 11)
+
         self.text_encoder = LSTMEncoder(
-            vocab_size=hyperparams.n_embed,
-            embedding_dim=hyperparams.embedding_size,
-            hidden_dim=hyperparams.hidden_size,
-            num_layers=hyperparams.n_lstm_layers,
-            dropout=hyperparams.dropout_rate,
+            vocab_size=n_embed,
+            embedding_dim=embedding_size,
+            hidden_dim=hidden_size,
+            num_layers=n_lstm_layers,
+            dropout=dropout_rate,
             bidirectional=True,
         )
-        text_output_dim = 2 * hyperparams.hidden_size  # Bidirectional output
+        text_output_dim = 2 * hidden_size  # Bidirectional output
 
         # ============================================================
         # 2. Tabular Encoder: BatchNorm + 2-layer MLP
         # ============================================================
-        tab_hidden_dim = 2 * hyperparams.hidden_size
+        tab_hidden_dim = 2 * hidden_size
         self.tab_encoder = nn.Sequential(
-            nn.BatchNorm1d(hyperparams.input_tab_dim),
-            nn.Linear(hyperparams.input_tab_dim, tab_hidden_dim),
+            nn.BatchNorm1d(input_tab_dim),
+            nn.Linear(input_tab_dim, tab_hidden_dim),
             nn.ReLU(),
-            nn.Dropout(hyperparams.dropout_rate),
+            nn.Dropout(dropout_rate),
             nn.Linear(tab_hidden_dim, tab_hidden_dim),
             nn.LayerNorm(tab_hidden_dim),
             nn.ReLU(),
-            nn.Dropout(hyperparams.dropout_rate),
+            nn.Dropout(dropout_rate),
         )
 
         # ============================================================
@@ -208,7 +213,7 @@ class LSTM2RiskLightning(pl.LightningModule):
                 norm_first=True,  # Pre-norm like legacy
             ),
             nn.ReLU(),
-            nn.Dropout(hyperparams.dropout_rate),
+            nn.Dropout(dropout_rate),
             # Second residual block
             ResidualBlock(
                 dim=fusion_dim,
@@ -218,7 +223,7 @@ class LSTM2RiskLightning(pl.LightningModule):
                 norm_first=True,
             ),
             nn.ReLU(),
-            nn.Dropout(hyperparams.dropout_rate),
+            nn.Dropout(dropout_rate),
             # Third residual block
             ResidualBlock(
                 dim=fusion_dim,
@@ -228,21 +233,20 @@ class LSTM2RiskLightning(pl.LightningModule):
                 norm_first=True,
             ),
             nn.ReLU(),
-            nn.Dropout(hyperparams.dropout_rate),
+            nn.Dropout(dropout_rate),
             # Final MLP
-            nn.Linear(fusion_dim, hyperparams.hidden_size),
+            nn.Linear(fusion_dim, hidden_size),
             nn.ReLU(),
-            nn.Dropout(hyperparams.dropout_rate),
-            nn.Linear(hyperparams.hidden_size, self.num_classes),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, self.num_classes),
         )
 
         # ============================================================
         # 4. Loss Function (CrossEntropyLoss with class weights)
         # ============================================================
-        if hyperparams.class_weights is not None:
-            class_weights_tensor = torch.tensor(
-                hyperparams.class_weights, dtype=torch.float
-            )
+        class_weights = config.get("class_weights")
+        if class_weights is not None:
+            class_weights_tensor = torch.tensor(class_weights, dtype=torch.float)
         else:
             class_weights_tensor = torch.ones(self.num_classes, dtype=torch.float)
 
@@ -250,7 +254,7 @@ class LSTM2RiskLightning(pl.LightningModule):
         self.loss_fn = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
 
         # Save hyperparameters for Lightning checkpointing
-        self.save_hyperparameters(hyperparams.model_dump())
+        self.save_hyperparameters(config)
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
@@ -518,7 +522,7 @@ class LSTM2RiskLightning(pl.LightningModule):
             - Handles variable-length sequences via attention masking
             """
 
-            def __init__(self, model: LSTM2RiskLightning):
+            def __init__(self, model: LSTM2Risk):
                 super().__init__()
                 self.model = model
 

@@ -8,7 +8,7 @@ from pydantic import Field, model_validator, PrivateAttr
 from typing import Optional, Literal
 import warnings
 
-from .hyperparameters_base import ModelHyperparameters
+from ...core.base.hyperparameters_base import ModelHyperparameters
 
 
 class LightGBMMtModelHyperparameters(ModelHyperparameters):

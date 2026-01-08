@@ -139,6 +139,26 @@ class Transformer2RiskHyperparameters(ModelHyperparameters):
         "Should be set based on typical input text lengths (names/emails).",
     )
 
+    # ===== Training and Optimization Parameters (Tier 2) =====
+    # These parameters control the optimization process
+
+    weight_decay: float = Field(
+        default=0.0, description="Weight decay for optimizer (L2 penalty)"
+    )
+
+    adam_epsilon: float = Field(default=1e-08, description="Epsilon for Adam optimizer")
+
+    warmup_steps: int = Field(
+        default=300,
+        gt=0,
+        le=1000,
+        description="Warmup steps for learning rate scheduler",
+    )
+
+    run_scheduler: bool = Field(
+        default=True, description="Run learning rate scheduler flag"
+    )
+
     @model_validator(mode="after")
     def validate_transformer_hyperparameters(self) -> "Transformer2RiskHyperparameters":
         """Validate transformer-specific constraints."""

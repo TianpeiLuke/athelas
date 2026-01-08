@@ -1,7 +1,7 @@
 from pydantic import Field, model_validator, PrivateAttr, ConfigDict
 from typing import List, Dict, Any, Optional, Union
 
-from .hyperparameters_base import ModelHyperparameters
+from ...core.base.hyperparameters_base import ModelHyperparameters
 
 
 class TriModalHyperparameters(ModelHyperparameters):

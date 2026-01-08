@@ -108,3 +108,23 @@ class LSTM2RiskHyperparameters(ModelHyperparameters):
         "More layers can capture more complex patterns but increase training time. "
         "Dropout is applied between layers when n_lstm_layers > 1.",
     )
+
+    # ===== Training and Optimization Parameters (Tier 2) =====
+    # These parameters control the optimization process
+
+    weight_decay: float = Field(
+        default=0.0, description="Weight decay for optimizer (L2 penalty)"
+    )
+
+    adam_epsilon: float = Field(default=1e-08, description="Epsilon for Adam optimizer")
+
+    warmup_steps: int = Field(
+        default=300,
+        gt=0,
+        le=1000,
+        description="Warmup steps for learning rate scheduler",
+    )
+
+    run_scheduler: bool = Field(
+        default=True, description="Run learning rate scheduler flag"
+    )

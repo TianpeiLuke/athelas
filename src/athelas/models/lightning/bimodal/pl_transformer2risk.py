@@ -19,7 +19,7 @@ Supports:
 
 Usage:
 ```python
-from names3risk_pytorch.dockers.lightning_models.bimodal import Transformer2RiskLightning
+from names3risk_pytorch.dockers.lightning_models.bimodal import Transformer2Risk
 from names3risk_pytorch.dockers.hyperparams import Transformer2RiskHyperparameters
 
 hyperparams = Transformer2RiskHyperparameters(
@@ -33,7 +33,7 @@ hyperparams = Transformer2RiskHyperparameters(
     ...
 )
 
-model = Transformer2RiskLightning(hyperparams)
+model = Transformer2Risk(hyperparams)
 trainer = pl.Trainer(max_epochs=10)
 trainer.fit(model, train_dataloader, val_dataloader)
 ```
@@ -57,7 +57,7 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 
-from ....hyperparams.hyperparameters_transformer2risk import (
+from ...hyperparams.hyperparameters_transformer2risk import (
     Transformer2RiskHyperparameters,
 )
 from ...pytorch.blocks import TransformerEncoder
@@ -91,7 +91,7 @@ logger.addHandler(handler)
 logger.propagate = False
 
 
-class Transformer2RiskLightning(pl.LightningModule):
+class Transformer2Risk(pl.LightningModule):
     """
     PyTorch Lightning module for Transformer2Risk bimodal fraud detection.
 
@@ -140,27 +140,25 @@ class Transformer2RiskLightning(pl.LightningModule):
         - Returns probabilities (not logits)
     """
 
-    def __init__(self, hyperparams: Transformer2RiskHyperparameters):
+    def __init__(self, config: Dict):
         super().__init__()
-        self.hyperparams = hyperparams
+        self.config = config
         self.model_class = "transformer2risk"
 
         # === Task configuration ===
-        self.label_name = getattr(hyperparams, "label_name", "label")
-        self.is_binary = hyperparams.is_binary
+        self.label_name = config.get("label_name", "label")
+        self.is_binary = config.get("is_binary", True)
         self.task = "binary" if self.is_binary else "multiclass"
-        self.num_classes = hyperparams.num_classes
-        self.metric_choices = getattr(
-            hyperparams, "metric_choices", ["accuracy", "f1_score"]
-        )
+        self.num_classes = 2 if self.is_binary else config.get("num_classes", 2)
+        self.metric_choices = config.get("metric_choices", ["accuracy", "f1_score"])
 
         # === Training configuration ===
-        self.model_path = getattr(hyperparams, "model_path", "")
-        self.lr = hyperparams.lr
-        self.weight_decay = getattr(hyperparams, "weight_decay", 0.0)
-        self.adam_epsilon = getattr(hyperparams, "adam_epsilon", 1e-8)
-        self.warmup_steps = getattr(hyperparams, "warmup_steps", 0)
-        self.run_scheduler = getattr(hyperparams, "run_scheduler", True)
+        self.model_path = config.get("model_path", "")
+        self.lr = config.get("lr", 2e-5)
+        self.weight_decay = config.get("weight_decay", 0.0)
+        self.adam_epsilon = config.get("adam_epsilon", 1e-8)
+        self.warmup_steps = config.get("warmup_steps", 0)
+        self.run_scheduler = config.get("run_scheduler", True)
 
         # === Storage for predictions ===
         self.id_lst, self.pred_lst, self.label_lst = [], [], []
@@ -170,39 +168,46 @@ class Transformer2RiskLightning(pl.LightningModule):
         # ============================================================
         # 1. Text Encoder: TransformerEncoder (self-attention + pooling)
         # ============================================================
+        n_embed = config.get("n_embed", 4000)
+        embedding_size = config.get("embedding_size", 128)
+        hidden_size = config.get("hidden_size", 256)
+        n_blocks = config.get("n_blocks", 8)
+        n_heads = config.get("n_heads", 8)
+        block_size = config.get("block_size", 100)
+        dropout_rate = config.get("dropout_rate", 0.2)
+        input_tab_dim = config.get("input_tab_dim", 11)
+
         self.text_encoder = TransformerEncoder(
-            vocab_size=hyperparams.n_embed,
-            embedding_dim=hyperparams.embedding_size,
-            num_blocks=hyperparams.n_blocks,
-            num_heads=hyperparams.n_heads,
-            block_size=hyperparams.block_size,
-            dropout=hyperparams.dropout_rate,
+            vocab_size=n_embed,
+            embedding_dim=embedding_size,
+            num_blocks=n_blocks,
+            num_heads=n_heads,
+            block_size=block_size,
+            dropout=dropout_rate,
         )
 
         # Project transformer output to match hidden_size convention
-        self.text_proj = nn.Linear(
-            hyperparams.embedding_size, 2 * hyperparams.hidden_size
-        )
+        self.text_proj = nn.Linear(embedding_size, 2 * hidden_size)
 
         # ============================================================
         # 2. Tabular Encoder: BatchNorm + 2-layer MLP
         # ============================================================
-        tab_hidden_dim = 2 * hyperparams.hidden_size
+        tab_hidden_dim = 2 * hidden_size
         self.tab_encoder = nn.Sequential(
-            nn.BatchNorm1d(hyperparams.input_tab_dim),
-            nn.Linear(hyperparams.input_tab_dim, tab_hidden_dim),
+            nn.BatchNorm1d(input_tab_dim),
+            nn.Linear(input_tab_dim, tab_hidden_dim),
             nn.ReLU(),
-            nn.Dropout(hyperparams.dropout_rate),
+            nn.Dropout(dropout_rate),
             nn.Linear(tab_hidden_dim, tab_hidden_dim),
             nn.LayerNorm(tab_hidden_dim),
             nn.ReLU(),
-            nn.Dropout(hyperparams.dropout_rate),
+            nn.Dropout(dropout_rate),
         )
 
         # ============================================================
         # 3. Fusion Classifier: 4x ResidualBlocks + Linear
         # ============================================================
-        fusion_dim = 4 * hyperparams.hidden_size
+        fusion_dim = 4 * hidden_size
 
         # Build classifier with 4 ResidualBlocks (post-norm, 1x expansion)
         classifier_layers = []
@@ -212,12 +217,12 @@ class Transformer2RiskLightning(pl.LightningModule):
                     ResidualBlock(
                         dim=fusion_dim,
                         expansion_factor=1,  # 1x expansion like legacy
-                        dropout=hyperparams.dropout_rate,
+                        dropout=dropout_rate,
                         activation="relu",
                         norm_first=False,  # Post-norm like legacy
                     ),
                     nn.ReLU(),
-                    nn.Dropout(hyperparams.dropout_rate),
+                    nn.Dropout(dropout_rate),
                 ]
             )
 
@@ -229,10 +234,9 @@ class Transformer2RiskLightning(pl.LightningModule):
         # ============================================================
         # 4. Loss Function (CrossEntropyLoss with class weights)
         # ============================================================
-        if hyperparams.class_weights is not None:
-            class_weights_tensor = torch.tensor(
-                hyperparams.class_weights, dtype=torch.float
-            )
+        class_weights = config.get("class_weights")
+        if class_weights is not None:
+            class_weights_tensor = torch.tensor(class_weights, dtype=torch.float)
         else:
             class_weights_tensor = torch.ones(self.num_classes, dtype=torch.float)
 
@@ -240,7 +244,7 @@ class Transformer2RiskLightning(pl.LightningModule):
         self.loss_fn = nn.CrossEntropyLoss(weight=self.class_weights_tensor)
 
         # Save hyperparameters for Lightning checkpointing
-        self.save_hyperparameters(hyperparams.model_dump())
+        self.save_hyperparameters(config)
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
@@ -502,7 +506,7 @@ class Transformer2RiskLightning(pl.LightningModule):
             Returns probabilities (not logits) for production use.
             """
 
-            def __init__(self, model: Transformer2RiskLightning):
+            def __init__(self, model: Transformer2Risk):
                 super().__init__()
                 self.model = model
 

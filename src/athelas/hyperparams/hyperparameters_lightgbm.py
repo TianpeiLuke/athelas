@@ -1,7 +1,7 @@
 from pydantic import Field, model_validator, PrivateAttr
 from typing import List, Optional, Dict, Any, Union
 
-from .hyperparameters_base import ModelHyperparameters
+from ...core.base.hyperparameters_base import ModelHyperparameters
 
 
 class LightGBMModelHyperparameters(ModelHyperparameters):
