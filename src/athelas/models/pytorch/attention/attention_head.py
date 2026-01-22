@@ -111,8 +111,10 @@ class AttentionHead(nn.Module):
 
         # Apply mask if provided
         if attn_mask is not None:
+            # Convert mask to boolean if needed (handles both int and bool masks)
             # attn_mask shape: (B, L) -> expand to (B, 1, L) for broadcasting
-            scores = scores.masked_fill(~attn_mask.unsqueeze(1), float("-inf"))
+            mask_bool = attn_mask.bool() if attn_mask.dtype != torch.bool else attn_mask
+            scores = scores.masked_fill(~mask_bool.unsqueeze(1), float("-inf"))
 
         # Normalize and apply dropout
         weights = F.softmax(scores, dim=-1)

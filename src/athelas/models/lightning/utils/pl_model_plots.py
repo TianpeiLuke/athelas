@@ -32,7 +32,8 @@ from torchmetrics.functional.classification import (
 
 
 # Color palettes
-class_colors = cm.get_cmap("tab10")  # tab10 supports up to 10 distinct colors
+# Use plt.get_cmap() for matplotlib 3.9+ compatibility (cm.get_cmap() deprecated)
+class_colors = plt.get_cmap("tab10")  # tab10 supports up to 10 distinct colors
 curve_colors = {
     "test": "red",
     "val": "green",
@@ -74,7 +75,7 @@ def compute_metrics(
     stage: str = None,
 ) -> Dict[str, Union[Tensor, Tuple[Tensor, Tensor]]]:
     """
-    Compute classification metrics.
+    Compute classification metrics with robust shape handling.
 
     Args:
         preds (Tensor): Model predictions.
@@ -86,7 +87,43 @@ def compute_metrics(
 
     Returns:
         Dict[str, Tensor]: Dictionary of metric names and values.
+
+    Note:
+        For binary classification, this function automatically normalizes prediction shapes:
+        - (B, 2) -> (B,) by extracting positive class probability
+        - (B, 1) -> (B,) by squeezing
+        - (B,) -> (B,) no change needed
     """
+    # Defensive shape handling for binary classification
+    if task == "binary":
+        original_shape = preds.shape
+
+        if preds.ndim == 2 and preds.shape[1] == 2:
+            # Auto-correct: (B, 2) -> (B,) by extracting positive class
+            preds = preds[:, 1]
+            print(
+                f"[compute_metrics] Auto-corrected binary predictions: {original_shape} -> {preds.shape}"
+            )
+
+        elif preds.ndim == 2 and preds.shape[1] == 1:
+            # Auto-correct: (B, 1) -> (B,) by squeezing
+            preds = preds.squeeze(1)
+            print(
+                f"[compute_metrics] Auto-corrected binary predictions: {original_shape} -> {preds.shape}"
+            )
+
+        elif preds.ndim == 1:
+            # Already correct format: (B,)
+            pass
+
+        else:
+            # Invalid shape - raise informative error
+            raise ValueError(
+                f"Invalid binary prediction shape: {preds.shape}. "
+                f"Expected one of: (B,), (B, 1), or (B, 2), where B is batch size. "
+                f"Current shape suggests: ndim={preds.ndim}, shape={preds.shape}"
+            )
+
     if isinstance(metric_choices, str):
         metric_choices = [metric_choices]
     elif not isinstance(metric_choices, list):

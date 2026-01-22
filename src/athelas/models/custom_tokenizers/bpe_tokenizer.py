@@ -45,7 +45,7 @@ rate on validation set (e.g., 2.5 chars per token).
 
 **Usage Example:**
 ```python
-from names3risk_pytorch.dockers.tokenizers import CompressionBPETokenizer
+from names3risk_pytorch.dockers.custom_tokenizers import CompressionBPETokenizer
 
 # Train tokenizer
 tokenizer = CompressionBPETokenizer(min_frequency=25)

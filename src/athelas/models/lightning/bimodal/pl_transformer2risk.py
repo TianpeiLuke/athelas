@@ -57,9 +57,6 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 
-from ...hyperparams.hyperparameters_transformer2risk import (
-    Transformer2RiskHyperparameters,
-)
 from ...pytorch.blocks import TransformerEncoder
 from ...pytorch.feedforward import ResidualBlock
 
@@ -140,10 +137,17 @@ class Transformer2Risk(pl.LightningModule):
         - Returns probabilities (not logits)
     """
 
-    def __init__(self, config: Dict):
+    def __init__(
+        self,
+        config: Dict[str, Union[int, float, str, bool, List[str], torch.FloatTensor]],
+    ):
         super().__init__()
         self.config = config
         self.model_class = "transformer2risk"
+
+        # === Field names for batch extraction ===
+        self.text_name = config.get("text_name", "text_field")
+        self.tab_field_list = config.get("tab_field_list", [])
 
         # === Task configuration ===
         self.label_name = config.get("label_name", "label")
@@ -151,6 +155,12 @@ class Transformer2Risk(pl.LightningModule):
         self.task = "binary" if self.is_binary else "multiclass"
         self.num_classes = 2 if self.is_binary else config.get("num_classes", 2)
         self.metric_choices = config.get("metric_choices", ["accuracy", "f1_score"])
+
+        # === Configurable batch key names ===
+        self.text_input_ids_key = config.get("text_input_ids_key", "input_ids")
+        self.text_attention_mask_key = config.get(
+            "text_attention_mask_key", "attention_mask"
+        )
 
         # === Training configuration ===
         self.model_path = config.get("model_path", "")
@@ -173,21 +183,21 @@ class Transformer2Risk(pl.LightningModule):
         hidden_size = config.get("hidden_size", 256)
         n_blocks = config.get("n_blocks", 8)
         n_heads = config.get("n_heads", 8)
-        block_size = config.get("block_size", 100)
+        max_sen_len = config.get("max_sen_len", 100)
         dropout_rate = config.get("dropout_rate", 0.2)
-        input_tab_dim = config.get("input_tab_dim", 11)
+        # Auto-derive input_tab_dim from tab_field_list if not provided
+        input_tab_dim = config.get("input_tab_dim", len(self.tab_field_list))
 
         self.text_encoder = TransformerEncoder(
             vocab_size=n_embed,
             embedding_dim=embedding_size,
-            num_blocks=n_blocks,
-            num_heads=n_heads,
-            block_size=block_size,
+            hidden_dim=hidden_size,
+            n_blocks=n_blocks,
+            n_heads=n_heads,
+            max_seq_len=max_sen_len,
             dropout=dropout_rate,
         )
-
-        # Project transformer output to match hidden_size convention
-        self.text_proj = nn.Linear(embedding_size, 2 * hidden_size)
+        # Note: text_encoder already projects to 2*hidden_size internally
 
         # ============================================================
         # 2. Tabular Encoder: BatchNorm + 2-layer MLP
@@ -252,21 +262,60 @@ class Transformer2Risk(pl.LightningModule):
 
         Args:
             batch: Dictionary containing:
-                - "text": (B, L) token IDs
-                - "attn_mask": (B, L) attention mask (optional)
-                - "tabular": (B, F) tabular features
+                - {text_name}_input_ids: (B, 1, L) or (B, L) token IDs (may have chunk dimension)
+                - {text_name}_attention_mask: (B, 1, L) or (B, L) attention mask
+                - Individual tabular fields as lists (one per field in tab_field_list)
+                - label: list of labels
 
         Returns:
             logits: (B, num_classes) classification logits
         """
-        # Extract inputs
-        text_tokens = batch["text"]  # (B, L)
-        attn_mask = batch.get("attn_mask")  # (B, L) or None
-        tab_data = batch["tabular"].float()  # (B, F)
+        device = next(self.parameters()).device
+
+        # 1. Extract text with field name prefix (from pipeline_dataloader)
+        text_input_ids_key = f"{self.text_name}_{self.text_input_ids_key}"
+        text_attention_mask_key = f"{self.text_name}_{self.text_attention_mask_key}"
+
+        text_tokens = batch[text_input_ids_key]  # (B, 1, L) or (B, L)
+        attn_mask = batch.get(text_attention_mask_key)  # (B, 1, L) or (B, L) or None
+
+        # Squeeze chunk dimension if present (pipeline_dataloader adds it)
+        if len(text_tokens.shape) == 3:
+            text_tokens = text_tokens.squeeze(1)  # (B, 1, L) → (B, L)
+        if attn_mask is not None and len(attn_mask.shape) == 3:
+            attn_mask = attn_mask.squeeze(1)  # (B, 1, L) → (B, L)
+
+        # DEBUG: Check token ID ranges before model forward
+        if text_tokens.numel() > 0 and logger.isEnabledFor(logging.DEBUG):
+            max_token = text_tokens.max().item()
+            min_token = text_tokens.min().item()
+            n_embed = self.text_encoder.token_embedding.num_embeddings
+            logger.debug(
+                f"[Transformer2Risk FORWARD] Token ID range: [{min_token}, {max_token}]"
+            )
+            logger.debug(
+                f"[Transformer2Risk FORWARD] Embedding num_embeddings: {n_embed}"
+            )
+            if max_token >= n_embed:
+                logger.error(
+                    f"❌ [Transformer2Risk FORWARD] Token {max_token} >= num_embeddings {n_embed}!"
+                )
+
+        # 2. Extract and stack individual tabular fields
+        for field in self.tab_field_list:
+            if field not in batch:
+                raise KeyError(f"Missing required tabular field: {field}")
+
+        tab_data = torch.stack(
+            [
+                torch.tensor(batch[field], device=device, dtype=torch.float32)
+                for field in self.tab_field_list
+            ],
+            dim=1,
+        )  # (B, num_features)
 
         # Text encoding: Transformer + attention pooling + projection
-        text_hidden = self.text_encoder(text_tokens, attn_mask)  # (B, embedding_size)
-        text_hidden = self.text_proj(text_hidden)  # (B, 2*H)
+        text_hidden = self.text_encoder(text_tokens, attn_mask)  # (B, 2*H)
 
         # Tabular encoding: BatchNorm + MLP
         tab_hidden = self.tab_encoder(tab_data)  # (B, 2*H)
@@ -355,7 +404,7 @@ class Transformer2Risk(pl.LightningModule):
 
         Returns:
             loss: Scalar loss (None for pred stage)
-            preds: Predictions (probabilities or class probabilities)
+            preds: Predictions (full probability distribution for all classes)
             labels: Ground truth labels (None for pred stage)
         """
         # Get labels (if available)
@@ -373,10 +422,8 @@ class Transformer2Risk(pl.LightningModule):
         loss = self.loss_fn(logits, labels) if labels is not None else None
 
         # Get predictions (probabilities)
-        preds = torch.softmax(logits, dim=1)
-        if self.is_binary:
-            preds = preds[:, 1]  # Binary: return P(positive class)
-
+        preds = torch.softmax(logits, dim=1)  # (B, num_classes)
+        preds = preds[:, 1] if self.is_binary else preds
         return loss, preds, labels
 
     def training_step(self, batch, batch_idx):
@@ -527,9 +574,8 @@ class Transformer2Risk(pl.LightningModule):
                 Returns:
                     probs: Class probabilities (B, num_classes)
                 """
-                # Text encoding
+                # Text encoding (already projects to 2*H internally)
                 text_hidden = self.model.text_encoder(text_tokens, attn_mask)
-                text_hidden = self.model.text_proj(text_hidden)
 
                 # Tabular encoding
                 tab_hidden = self.model.tab_encoder(tabular.float())
@@ -547,12 +593,34 @@ class Transformer2Risk(pl.LightningModule):
         model_to_export = model_to_export.to("cpu")
         wrapper = Transformer2RiskONNXWrapper(model_to_export).to("cpu").eval()
 
-        # Prepare inputs
-        text_tokens = sample_batch["text"].to("cpu")
+        # Construct prefixed keys (same pattern as forward() method)
+        text_input_ids_key = f"{self.text_name}_{self.text_input_ids_key}"
+        text_attention_mask_key = f"{self.text_name}_{self.text_attention_mask_key}"
+
+        # Prepare inputs using config-driven keys
+        text_tokens = sample_batch[text_input_ids_key].to("cpu")
+
+        # Squeeze chunk dimension if present (pipeline_dataloader adds it)
+        if len(text_tokens.shape) == 3:
+            text_tokens = text_tokens.squeeze(1)  # (B, 1, L) → (B, L)
+
         attn_mask = sample_batch.get(
-            "attn_mask", torch.ones_like(text_tokens).bool()
+            text_attention_mask_key, torch.ones_like(text_tokens).bool()
         ).to("cpu")
-        tabular = sample_batch["tabular"].to("cpu").float()
+
+        # Squeeze chunk dimension for attention mask if present
+        if attn_mask is not None and len(attn_mask.shape) == 3:
+            attn_mask = attn_mask.squeeze(1)  # (B, 1, L) → (B, L)
+
+        # Handle tabular data: stack individual fields
+        device = torch.device("cpu")
+        tabular = torch.stack(
+            [
+                torch.tensor(sample_batch[field], device=device, dtype=torch.float32)
+                for field in self.tab_field_list
+            ],
+            dim=1,
+        )  # (B, num_features)
 
         # Verify batch consistency
         batch_size = text_tokens.shape[0]

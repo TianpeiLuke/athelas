@@ -55,7 +55,6 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 
-from ...hyperparams.hyperparameters_lstm2risk import LSTM2RiskHyperparameters
 from ...pytorch.blocks import LSTMEncoder
 from ...pytorch.feedforward import ResidualBlock
 
@@ -139,10 +138,17 @@ class LSTM2Risk(pl.LightningModule):
         - Returns probabilities (not logits)
     """
 
-    def __init__(self, config: Dict):
+    def __init__(
+        self,
+        config: Dict[str, Union[int, float, str, bool, List[str], torch.FloatTensor]],
+    ):
         super().__init__()
         self.config = config
         self.model_class = "lstm2risk"
+
+        # === Field names for batch extraction ===
+        self.text_name = config.get("text_name", "text_field")
+        self.tab_field_list = config.get("tab_field_list", [])
 
         # === Task configuration ===
         self.label_name = config.get("label_name", "label")
@@ -150,6 +156,12 @@ class LSTM2Risk(pl.LightningModule):
         self.task = "binary" if self.is_binary else "multiclass"
         self.num_classes = 2 if self.is_binary else config.get("num_classes", 2)
         self.metric_choices = config.get("metric_choices", ["accuracy", "f1_score"])
+
+        # === Configurable batch key names ===
+        self.text_input_ids_key = config.get("text_input_ids_key", "input_ids")
+        self.text_length_key = (
+            "text_length"  # LSTM always needs text_length for pack_padded_sequence
+        )
 
         # === Training configuration ===
         self.model_path = config.get("model_path", "")
@@ -172,7 +184,8 @@ class LSTM2Risk(pl.LightningModule):
         hidden_size = config.get("hidden_size", 128)
         n_lstm_layers = config.get("n_lstm_layers", 4)
         dropout_rate = config.get("dropout_rate", 0.2)
-        input_tab_dim = config.get("input_tab_dim", 11)
+        # Auto-derive input_tab_dim from tab_field_list if not provided
+        input_tab_dim = config.get("input_tab_dim", len(self.tab_field_list))
 
         self.text_encoder = LSTMEncoder(
             vocab_size=n_embed,
@@ -262,17 +275,53 @@ class LSTM2Risk(pl.LightningModule):
 
         Args:
             batch: Dictionary containing:
-                - "text": (B, L) token IDs
-                - "text_length": (B,) sequence lengths (optional)
-                - "tabular": (B, F) tabular features
+                - {text_name}_input_ids: (B, 1, L) or (B, L) token IDs (may have chunk dimension)
+                - {text_name}_attention_mask: (B, 1, L) or (B, L) attention mask
+                - Individual tabular fields as lists (one per field in tab_field_list)
+                - label: list of labels
 
         Returns:
             logits: (B, num_classes) classification logits
         """
-        # Extract inputs
-        text_tokens = batch["text"]  # (B, L)
-        text_lengths = batch.get("text_length")  # (B,) or None
-        tab_data = batch["tabular"].float()  # (B, F)
+        device = next(self.parameters()).device
+
+        # 1. Extract text with field name prefix (from pipeline_dataloader)
+        text_input_ids_key = f"{self.text_name}_{self.text_input_ids_key}"
+        text_tokens = batch[text_input_ids_key]  # (B, 1, L) or (B, L)
+
+        # Squeeze chunk dimension if present (pipeline_dataloader adds it)
+        if len(text_tokens.shape) == 3:
+            text_tokens = text_tokens.squeeze(1)  # (B, 1, L) → (B, L)
+
+        # DEBUG: Check token ID ranges before model forward
+        if text_tokens.numel() > 0 and logger.isEnabledFor(logging.DEBUG):
+            max_token = text_tokens.max().item()
+            min_token = text_tokens.min().item()
+            n_embed = self.text_encoder.token_embedding.num_embeddings
+            logger.debug(
+                f"[LSTM2Risk FORWARD] Token ID range: [{min_token}, {max_token}]"
+            )
+            logger.debug(f"[LSTM2Risk FORWARD] Embedding num_embeddings: {n_embed}")
+            if max_token >= n_embed:
+                logger.error(
+                    f"❌ [LSTM2Risk FORWARD] Token {max_token} >= num_embeddings {n_embed}!"
+                )
+
+        # Extract text_length (LSTM needs this for pack_padded_sequence)
+        text_lengths = batch.get(self.text_length_key)  # May be None
+
+        # 2. Extract and stack individual tabular fields
+        for field in self.tab_field_list:
+            if field not in batch:
+                raise KeyError(f"Missing required tabular field: {field}")
+
+        tab_data = torch.stack(
+            [
+                torch.tensor(batch[field], device=device, dtype=torch.float32)
+                for field in self.tab_field_list
+            ],
+            dim=1,
+        )  # (B, num_features)
 
         # Text encoding: LSTM + attention pooling
         text_hidden = self.text_encoder(text_tokens, text_lengths)  # (B, 2*H)
@@ -364,7 +413,7 @@ class LSTM2Risk(pl.LightningModule):
 
         Returns:
             loss: Scalar loss (None for pred stage)
-            preds: Predictions (probabilities or class probabilities)
+            preds: Predictions (full probability distribution for all classes)
             labels: Ground truth labels (None for pred stage)
         """
         # Get labels (if available)
@@ -383,9 +432,7 @@ class LSTM2Risk(pl.LightningModule):
 
         # Get predictions (probabilities)
         preds = torch.softmax(logits, dim=1)
-        if self.is_binary:
-            preds = preds[:, 1]  # Binary: return P(positive class)
-
+        preds = preds[:, 1] if self.is_binary else preds
         return loss, preds, labels
 
     def training_step(self, batch, batch_idx):
@@ -567,10 +614,28 @@ class LSTM2Risk(pl.LightningModule):
         model_to_export = model_to_export.to("cpu")
         wrapper = LSTM2RiskONNXWrapper(model_to_export).to("cpu").eval()
 
-        # Prepare inputs
-        text_tokens = sample_batch["text"].to("cpu")
-        text_lengths = sample_batch["text_length"].to("cpu")
-        tabular = sample_batch["tabular"].to("cpu").float()
+        # Construct prefixed keys (same pattern as forward() method)
+        text_input_ids_key = f"{self.text_name}_{self.text_input_ids_key}"
+
+        # Prepare inputs using config-driven keys
+        text_tokens = sample_batch[text_input_ids_key].to("cpu")
+
+        # Squeeze chunk dimension if present (pipeline_dataloader adds it)
+        if len(text_tokens.shape) == 3:
+            text_tokens = text_tokens.squeeze(1)  # (B, 1, L) → (B, L)
+
+        # Get text lengths (LSTM needs this)
+        text_lengths = sample_batch[self.text_length_key].to("cpu")
+
+        # Handle tabular data: stack individual fields
+        device = torch.device("cpu")
+        tabular = torch.stack(
+            [
+                torch.tensor(sample_batch[field], device=device, dtype=torch.float32)
+                for field in self.tab_field_list
+            ],
+            dim=1,
+        )  # (B, num_features)
 
         # Verify batch consistency
         batch_size = text_tokens.shape[0]
