@@ -25,6 +25,15 @@ except ImportError:
     KeyedVectors = None
     HAS_GENSIM = False
 
+# Optional custom tokenizer import (HuggingFace tokenizers library)
+try:
+    from tokenizers import Tokenizer as HFTokenizer
+
+    HAS_CUSTOM_TOKENIZER = True
+except ImportError:
+    HFTokenizer = None
+    HAS_CUSTOM_TOKENIZER = False
+
 from .processors import Processor
 
 # Text processors (always available)
@@ -56,6 +65,10 @@ if HAS_TRANSFORMERS:
 if HAS_GENSIM:
     from .text.gensim_tokenize_processor import GensimTokenizeProcessor
 
+# Optional imports that require custom tokenizer
+if HAS_CUSTOM_TOKENIZER:
+    from .text.custom_bpe_tokenize_processor import CustomBPETokenizeProcessor
+
 
 # Registry mapping hyperparameter step names to processor classes
 # Base processors (always available)
@@ -84,6 +97,10 @@ if HAS_TRANSFORMERS:
 # Add gensim-dependent processors if available
 if HAS_GENSIM:
     PROCESSOR_REGISTRY["fasttext_embedding"] = GensimTokenizeProcessor
+
+# Add custom tokenizer-dependent processors if available
+if HAS_CUSTOM_TOKENIZER:
+    PROCESSOR_REGISTRY["custom_bpe_tokenizer"] = CustomBPETokenizeProcessor
 
 
 def build_text_pipeline_from_steps(
@@ -172,6 +189,26 @@ def build_text_pipeline_from_steps(
                 padding="max_length",  # CRITICAL FIX: Force padding to max_length instead of "longest"
                 input_ids_key=input_ids_key,
                 attention_mask_key=attention_mask_key,
+            )
+
+        elif step_name == "custom_bpe_tokenizer":
+            if not HAS_CUSTOM_TOKENIZER:
+                raise ImportError(
+                    "custom_bpe_tokenizer processor requires tokenizers library. "
+                    "Install with: pip install tokenizers"
+                )
+            if tokenizer is None:
+                raise ValueError(
+                    "custom_bpe_tokenizer processor requires a tokenizer argument"
+                )
+            processor = CustomBPETokenizeProcessor(
+                tokenizer=tokenizer,
+                add_special_tokens=True,
+                max_length=max_sen_len,
+                padding=True,  # Enable padding for consistent batch sizes
+                input_ids_key=input_ids_key,  # Use parameter from build_text_pipeline_from_steps
+                attention_mask_key=attention_mask_key,  # Use parameter from build_text_pipeline_from_steps
+                text_length_key="text_length",  # LSTM2Risk expects this field
             )
 
         elif step_name == "fasttext_embedding":
